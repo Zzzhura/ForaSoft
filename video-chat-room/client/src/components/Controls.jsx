@@ -6,8 +6,10 @@ import CopyLinkButton from './CopyLinkButton.jsx';
  * @property {boolean} videoEnabled - камера включена.
  * @property {boolean} [hasMic] - микрофон физически доступен (PRD п. 14).
  * @property {boolean} [hasCam] - камера физически доступна (PRD п. 14).
+ * @property {boolean} [chatOpen] - панель чата открыта.
  * @property {() => void} onToggleAudio - тумблер микрофона (PRD F-09).
  * @property {() => void} onToggleVideo - тумблер камеры (PRD F-10).
+ * @property {() => void} onToggleChat - показать/скрыть панель чата.
  * @property {() => void} onLeave - выход из комнаты (PRD F-17, US-10).
  */
 
@@ -89,7 +91,24 @@ const CamOffIcon = () => (
   </svg>
 );
 
-/** Иконка выхода из комнаты. */
+/** Иконка чата (lucide message-square). */
+const ChatIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="20"
+    height="20"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
+/** Иконка выхода из комнаты (lucide log-out). */
 const LeaveIcon = () => (
   <svg
     viewBox="0 0 24 24"
@@ -102,9 +121,9 @@ const LeaveIcon = () => (
     strokeLinejoin="round"
     aria-hidden="true"
   >
+    <path d="m16 17 5-5-5-5" />
+    <path d="M21 12H9" />
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-    <polyline points="16 17 21 12 16 7" />
-    <line x1="21" x2="9" y1="12" y2="12" />
   </svg>
 );
 
@@ -123,8 +142,10 @@ export default function Controls({
   videoEnabled,
   hasMic = true,
   hasCam = true,
+  chatOpen = true,
   onToggleAudio,
   onToggleVideo,
+  onToggleChat,
   onLeave,
 }) {
   return (
@@ -151,6 +172,17 @@ export default function Controls({
         title={videoEnabled ? 'Выключить камеру' : 'Включить камеру'}
       >
         {videoEnabled ? <CamIcon /> : <CamOffIcon />}
+      </button>
+
+      <button
+        type="button"
+        className={`ctrl-btn${chatOpen ? ' ctrl-btn--active' : ''}`}
+        onClick={onToggleChat}
+        aria-pressed={chatOpen}
+        aria-label={chatOpen ? 'Скрыть чат' : 'Показать чат'}
+        title={chatOpen ? 'Скрыть чат' : 'Показать чат'}
+      >
+        <ChatIcon />
       </button>
 
       <CopyLinkButton />

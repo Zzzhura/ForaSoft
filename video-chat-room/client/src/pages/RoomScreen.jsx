@@ -1,15 +1,22 @@
-import { useState } from 'react';
-import { useParams, useLocation } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import EntryScreen from '../components/EntryScreen.jsx';
-import CopyLinkButton from '../components/CopyLinkButton.jsx';
+import VideoGrid from '../components/VideoGrid.jsx';
+import ChatPanel from '../components/ChatPanel.jsx';
+import ParticipantList from '../components/ParticipantList.jsx';
+import Controls from '../components/Controls.jsx';
+import { useToast } from '../components/Toast.jsx';
+import { useLocalMedia } from '../webrtc/useLocalMedia.js';
+import { useSignaling } from '../socket/useSignaling.js';
+import { PeerConnectionManager } from '../webrtc/PeerConnectionManager.js';
 
 /**
- * Экран комнаты. Задача 14: чтение `roomId` из URL и вход по ссылке-приглашению.
- * Имя приходит из `StartScreen` через router state; при прямом открытии ссылки
- * state пуст — показываем экран ввода имени (PRD F-04, US-4). Перезагрузка теряет
- * router state → повторный ввод имени, что соответствует «новый вход» (PRD п. 28).
+ * Экран комнаты. Имя приходит из `StartScreen` через router state; при прямом
+ * открытии ссылки state пуст — спрашиваем имя (PRD F-04, US-4). Перезагрузка
+ * теряет state → повторный ввод имени = «новый вход» (PRD п. 28).
  *
- * Полная оркестрация (медиа + сигналинг + сетка + чат) — задача 18.
+ * Гейт имени держится отдельно от оркестрации, чтобы хуки звонка (`RoomCall`)
+ * вызывались безусловно (правила хуков).
  *
  * @returns {JSX.Element}
  */
@@ -18,7 +25,6 @@ export default function RoomScreen() {
   const location = useLocation();
   const [name, setName] = useState(location.state?.name ?? null);
 
-  // Вход по ссылке без переданного имени — запрашиваем имя перед входом (US-4).
   if (!name) {
     return (
       <EntryScreen
@@ -32,13 +38,235 @@ export default function RoomScreen() {
     );
   }
 
-  // Заглушка экрана комнаты — полная реализация в задаче 18.
+  return <RoomCall roomId={roomId} name={name} />;
+}
+
+/**
+ * Оркестрация звонка (задача 18, TDD §4.5/§7.1): собирает локальное медиа,
+ * сигналинг и mesh из `PeerConnectionManager`, реагирует на состав комнаты
+ * (`room:peer-joined/left`) и рендерит сетку + чат + участников + контролы.
+ *
+ * Жест входа (клик «Создать комнату»/«Войти») снимает autoplay-блокировку, так
+ * что удалённое аудио/видео воспроизводится (PRD п. 37, US-13). Доработка
+ * autoplay-кнопкой и экраны ошибок — задача 19.
+ *
+ * @param {{ roomId: string, name: string }} props
+ * @returns {JSX.Element}
+ */
+function RoomCall({ roomId, name }) {
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+
+  const pcmRef = useRef(null);
+  const joinedRef = useRef(false);
+  const signalingRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const mediaToastRef = useRef(false);
+
+  const [selfId, setSelfId] = useState(null);
+  /** @type {[Array<{socketId:string,name:string}>, Function]} */
+  const [remoteMembers, setRemoteMembers] = useState([]);
+  /** @type {[Record<string, MediaStream>, Function]} */
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [messages, setMessages] = useState([]);
+  const [roomFull, setRoomFull] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
+
+  // Стабильный проброс сигналинга в PCM: читаем актуальный сокет из ref, чтобы
+  // не пересоздавать менеджер и не ловить stale-closure.
+  const sendSignal = useCallback(
+    (type, to, payload) => signalingRef.current?.sendSignal(type, to, payload),
+    [],
+  );
+
+  const {
+    localStream,
+    audioEnabled,
+    videoEnabled,
+    hasMic,
+    hasCam,
+    ready,
+    error: mediaError,
+    toggleAudio,
+    toggleVideo,
+  } = useLocalMedia({
+    // Тумблер камеры (задача 12) меняет локальную дорожку → пробрасываем в mesh.
+    onVideoTrackChanged: (track) => pcmRef.current?.replaceVideoTrack(track),
+  });
+  localStreamRef.current = localStream;
+
+  // Отказ в доступе к камере/микрофону — тост, входим без устройств (PRD п. 33,
+  // US-12), приложение не «вылетает». Показываем один раз.
+  useEffect(() => {
+    if (mediaError === 'denied' && !mediaToastRef.current) {
+      mediaToastRef.current = true;
+      showToast({
+        type: 'warning',
+        text: 'Доступ к камере и микрофону отклонён. Вы можете войти без них.',
+      });
+    }
+  }, [mediaError, showToast]);
+
+  const signaling = useSignaling({
+    onJoined: ({ selfId: id, members, history }) => {
+      setSelfId(id);
+      setRemoteMembers(members);
+      setMessages(history);
+      // PCM создаём в момент входа: selfId известен, локальные дорожки захвачены
+      // (join гейтится по `ready`), поэтому они попадают в каждое соединение.
+      const pcm = new PeerConnectionManager({
+        selfId: id,
+        localStream: localStreamRef.current,
+        sendSignal,
+        onRemoteStream: (sid, stream) => setRemoteStreams((prev) => ({ ...prev, [sid]: stream })),
+        onPeerLeft: (sid) =>
+          setRemoteStreams((prev) => {
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          }),
+      });
+      pcmRef.current = pcm;
+      // Для каждого уже присутствующего участника поднимаем соединение; роль
+      // initiator определяется детерминированно внутри PCM (анти-glare, §7.1).
+      members.forEach((member) => pcm.addPeer(member.socketId));
+    },
+    onRoomFull: () => setRoomFull(true),
+    onPeerJoined: ({ socketId, name: peerName }) => {
+      setRemoteMembers((prev) =>
+        prev.some((m) => m.socketId === socketId) ? prev : [...prev, { socketId, name: peerName }],
+      );
+      pcmRef.current?.addPeer(socketId);
+    },
+    onPeerLeft: ({ socketId }) => {
+      // removePeer → onPeerLeft колбэк уберёт поток; снимаем участника из состава.
+      pcmRef.current?.removePeer(socketId);
+      setRemoteMembers((prev) => prev.filter((m) => m.socketId !== socketId));
+    },
+    onChatMessage: (message) => setMessages((prev) => [...prev, message]),
+    onSignalOffer: ({ from, sdp }) => pcmRef.current?.handleOffer(from, sdp),
+    onSignalAnswer: ({ from, sdp }) => pcmRef.current?.handleAnswer(from, sdp),
+    onSignalIce: ({ from, candidate }) => pcmRef.current?.handleIce(from, candidate),
+    onServerError: ({ code, message }) => console.error(`[room] server:error ${code}: ${message}`),
+  });
+  signalingRef.current = signaling;
+
+  const { connected, serverError } = signaling;
+
+  // Входим в комнату один раз — когда есть связь и попытка захвата медиа
+  // завершена (даже при отказе в устройствах входим без них, US-12).
+  useEffect(() => {
+    if (connected && ready && !joinedRef.current) {
+      joinedRef.current = true;
+      signalingRef.current.joinRoom(roomId, name);
+    }
+  }, [connected, ready, roomId, name]);
+
+  // Размонтирование (выход/закрытие вкладки) — закрываем mesh и выходим из комнаты.
+  useEffect(
+    () => () => {
+      pcmRef.current?.closeAll();
+      pcmRef.current = null;
+      signalingRef.current?.leaveRoom();
+      joinedRef.current = false;
+    },
+    [],
+  );
+
+  const handleLeave = () => {
+    pcmRef.current?.closeAll();
+    pcmRef.current = null;
+    signalingRef.current?.leaveRoom();
+    navigate('/');
+  };
+
+  if (serverError) {
+    return (
+      <RoomNotice
+        title="Ошибка сервера"
+        text="Не удалось подключиться к серверу. Проверьте соединение и попробуйте снова."
+        actionLabel="На главную"
+        onAction={() => navigate('/')}
+      />
+    );
+  }
+
+  if (roomFull) {
+    return (
+      <RoomNotice
+        title="Комната заполнена"
+        text="В комнате уже 4 участника — это максимум."
+        actionLabel="Повторить вход"
+        onAction={() => window.location.reload()}
+      />
+    );
+  }
+
+  // self-view — первой плиткой (PRD F-07); удалённые участники следом. Состояние
+  // микрофона/камеры удалённых не передаётся текущим socket-контрактом, поэтому
+  // считаем их активными; силуэт показываем, пока поток ещё не пришёл.
+  const tiles = [
+    {
+      id: selfId ?? 'self',
+      name,
+      stream: localStream,
+      isSelf: true,
+      audioEnabled,
+      videoEnabled,
+    },
+    ...remoteMembers.map((member) => ({
+      id: member.socketId,
+      name: member.name,
+      stream: remoteStreams[member.socketId] ?? null,
+      isSelf: false,
+      audioEnabled: true,
+      videoEnabled: Boolean(remoteStreams[member.socketId]),
+    })),
+  ];
+
+  const participants = [{ socketId: selfId ?? 'self', name }, ...remoteMembers];
+
   return (
-    <main className="screen">
-      <h1>Комната: {roomId}</h1>
-      <p>Вы вошли как: {name}</p>
-      <CopyLinkButton />
-      <p>Экран комнаты — заглушка каркаса. Реализация в задаче 18.</p>
+    <div className={`room${chatOpen ? '' : ' room--full'}`}>
+      <main className="room__stage">
+        <VideoGrid tiles={tiles} />
+        <Controls
+          audioEnabled={audioEnabled}
+          videoEnabled={videoEnabled}
+          hasMic={hasMic}
+          hasCam={hasCam}
+          chatOpen={chatOpen}
+          onToggleAudio={toggleAudio}
+          onToggleVideo={toggleVideo}
+          onToggleChat={() => setChatOpen((open) => !open)}
+          onLeave={handleLeave}
+        />
+      </main>
+      {chatOpen && (
+        <aside className="room__side">
+          <ParticipantList members={participants} selfId={selfId ?? 'self'} />
+          <ChatPanel messages={messages} onSend={signaling.sendChat} />
+        </aside>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Минимальный экран-уведомление для крайних состояний входа (сервер недоступен,
+ * комната заполнена). Полные баннеры/экраны ошибок окружения — задача 19.
+ *
+ * @param {{ title: string, text: string, actionLabel: string, onAction: () => void }} props
+ * @returns {JSX.Element}
+ */
+function RoomNotice({ title, text, actionLabel, onAction }) {
+  return (
+    <main className="room-notice">
+      <h1 className="room-notice__title">{title}</h1>
+      <p className="room-notice__text">{text}</p>
+      <button className="btn btn--primary" type="button" onClick={onAction}>
+        {actionLabel}
+      </button>
     </main>
   );
 }
