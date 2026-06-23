@@ -20,7 +20,14 @@ import { NAME_MAX_LEN, sanitizeNameInput, normalizeName } from '../lib/name.js';
  * @param {EntryScreenProps} props
  * @returns {JSX.Element}
  */
-export default function EntryScreen({ title, byline, caption, placeholder, submitLabel, onSubmit }) {
+export default function EntryScreen({
+  title,
+  byline,
+  caption,
+  placeholder,
+  submitLabel,
+  onSubmit,
+}) {
   const [name, setName] = useState('');
 
   const isValid = normalizeName(name).length > 0;
