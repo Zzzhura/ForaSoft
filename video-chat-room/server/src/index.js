@@ -7,6 +7,8 @@ import cors from 'cors';
 import { Server as SocketIOServer } from 'socket.io';
 import { config } from './config.js';
 import { registerRoomHandlers } from './roomHandlers.js';
+import { registerSignalingHandlers } from './signaling.js';
+import { registerChatHandlers } from './chat.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,12 +38,13 @@ const io = new SocketIOServer(server, {
   cors: { origin: config.clientOrigin },
 });
 
-// Регистрация обработчиков по сокету. Сигналинг (задача 7) и чат (задача 8)
-// подключаются здесь же по мере реализации.
+// Регистрация обработчиков по сокету: комнаты/состав, сигналинг WebRTC, чат.
 io.on('connection', (socket) => {
   console.log(`[socket] connected: ${socket.id}`);
 
   registerRoomHandlers(io, socket);
+  registerSignalingHandlers(io, socket);
+  registerChatHandlers(io, socket);
 
   socket.on('disconnect', (reason) => {
     console.log(`[socket] disconnected: ${socket.id} (${reason})`);

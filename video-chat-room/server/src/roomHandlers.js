@@ -1,22 +1,9 @@
-import { randomUUID } from 'node:crypto';
 import { roomRegistry } from './rooms.js';
 import { validateName } from './validation.js';
+import { emitSystemMessage } from './chat.js';
 
 /** Разумный потолок длины идентификатора комнаты (защита от мусорного ввода). */
 const MAX_ROOM_ID_LEN = 64;
-
-/**
- * Создаёт системное сообщение чата (вход/выход участника, PRD F-15, US-9).
- * Текст формируется на сервере из уже экранированного имени, поэтому безопасен.
- * @param {string} text
- * @returns {{ id: string, type: 'system', text: string, ts: number }}
- */
-const createSystemMessage = (text) => ({
-  id: randomUUID(),
-  type: 'system',
-  text,
-  ts: Date.now(),
-});
 
 /**
  * Нормализует roomId из клиента: строка, trim, ограничение длины.
@@ -36,9 +23,8 @@ const normalizeRoomId = (raw) =>
  *  2. атомарный `joinRoom` (задача 3) — лимит ≤ 4 проверяется без гонок;
  *  3. при отказе → `room:full`; при успехе → `room:joined` инициатору
  *     (его selfId, состав без него самого, история чата) и `room:peer-joined`
- *     остальным участникам комнаты.
- *
- * Системное чат-сообщение о входе добавляется отдельно в задаче 8.
+ *     остальным участникам комнаты;
+ *  4. системное сообщение «<имя> присоединился к комнате» в чат (F-15, US-9).
  *
  * @param {import('socket.io').Server} io
  * @param {import('socket.io').Socket} socket
@@ -84,6 +70,10 @@ export function registerRoomHandlers(io, socket) {
 
     // Остальным — что появился новый участник (триггер offer по правилу initiator, §7.1).
     socket.to(roomId).emit('room:peer-joined', { socketId: socket.id, name });
+
+    // Системное сообщение в чат + история (F-15, US-9). Добавляется после room:joined,
+    // поэтому в выданную новичку историю не попадает — он видит его как live-событие.
+    emitSystemMessage(io, roomId, `${name} присоединился к комнате`);
   });
 
   // Явный выход и обрыв соединения обрабатываются одинаково (PRD F-18, US-10/US-11):
@@ -125,7 +115,5 @@ function handleLeave(io, socket) {
   io.to(roomId).emit('room:peer-left', { socketId: socket.id });
 
   // Системное сообщение в чат + история (F-15, US-9); late-joiner увидит его (F-14).
-  const sysMsg = createSystemMessage(`${name} покинул комнату`);
-  roomRegistry.addMessage(roomId, sysMsg);
-  io.to(roomId).emit('chat:message', sysMsg);
+  emitSystemMessage(io, roomId, `${name} покинул комнату`);
 }
