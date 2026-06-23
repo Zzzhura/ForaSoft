@@ -190,9 +190,9 @@ export class PeerConnectionManager {
    */
   replaceVideoTrack(track) {
     for (const { videoSender } of this.peers.values()) {
-      videoSender?.replaceTrack(track).catch((err) =>
-        console.error('[pcm] replaceVideoTrack failed:', err),
-      );
+      videoSender
+        ?.replaceTrack(track)
+        .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
     }
   }
 

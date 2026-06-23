@@ -56,9 +56,7 @@ export function registerSignalingHandlers(io, socket) {
     io.to(to).emit(event, { from: socket.id, ...forwarded });
   };
 
-  socket.on('signal:offer', (payload = {}) =>
-    relay('signal:offer', payload, { sdp: payload.sdp }),
-  );
+  socket.on('signal:offer', (payload = {}) => relay('signal:offer', payload, { sdp: payload.sdp }));
 
   socket.on('signal:answer', (payload = {}) =>
     relay('signal:answer', payload, { sdp: payload.sdp }),
