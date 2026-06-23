@@ -6,6 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import { Server as SocketIOServer } from 'socket.io';
 import { config } from './config.js';
+import { registerRoomHandlers } from './roomHandlers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,10 +36,12 @@ const io = new SocketIOServer(server, {
   cors: { origin: config.clientOrigin },
 });
 
-// Обработчики комнат / сигналинга / чата подключаются в задачах 5–8.
-// Здесь — только базовый bootstrap соединения (impl §1.1).
+// Регистрация обработчиков по сокету. Сигналинг (задача 7) и чат (задача 8)
+// подключаются здесь же по мере реализации.
 io.on('connection', (socket) => {
   console.log(`[socket] connected: ${socket.id}`);
+
+  registerRoomHandlers(io, socket);
 
   socket.on('disconnect', (reason) => {
     console.log(`[socket] disconnected: ${socket.id} (${reason})`);
