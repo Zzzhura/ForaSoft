@@ -3,7 +3,6 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import EntryScreen from '../components/EntryScreen.jsx';
 import VideoGrid from '../components/VideoGrid.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
-import ParticipantList from '../components/ParticipantList.jsx';
 import Controls from '../components/Controls.jsx';
 import NoticeScreen from '../components/NoticeScreen.jsx';
 import { useToast } from '../components/Toast.jsx';
@@ -25,6 +24,9 @@ export default function RoomScreen() {
   const { roomId } = useParams();
   const location = useLocation();
   const [name, setName] = useState(location.state?.name ?? null);
+  // Название комнаты от создателя (router state). У входящих по ссылке его нет —
+  // тогда название придёт с сервера в `room:joined` (источник истины).
+  const initialRoomTitle = location.state?.roomTitle ?? '';
 
   if (!name) {
     return (
@@ -39,7 +41,7 @@ export default function RoomScreen() {
     );
   }
 
-  return <RoomCall roomId={roomId} name={name} />;
+  return <RoomCall roomId={roomId} name={name} initialRoomTitle={initialRoomTitle} />;
 }
 
 /**
@@ -52,10 +54,10 @@ export default function RoomScreen() {
  * всё же блокирует автозапуск, плитки сообщают об этом и показывается баннер
  * «Включить звук» (задача 19). Экраны ошибок окружения — `NoticeScreen`.
  *
- * @param {{ roomId: string, name: string }} props
+ * @param {{ roomId: string, name: string, initialRoomTitle?: string }} props
  * @returns {JSX.Element}
  */
-function RoomCall({ roomId, name }) {
+function RoomCall({ roomId, name, initialRoomTitle = '' }) {
   const navigate = useNavigate();
   const { showToast } = useToast();
 
@@ -70,9 +72,14 @@ function RoomCall({ roomId, name }) {
   const [remoteMembers, setRemoteMembers] = useState([]);
   /** @type {[Record<string, MediaStream>, Function]} */
   const [remoteStreams, setRemoteStreams] = useState({});
+  /** @type {[Record<string, RTCPeerConnectionState>, Function]} Состояние P2P по socketId (задача 20). */
+  const [peerStates, setPeerStates] = useState({});
   const [messages, setMessages] = useState([]);
   const [roomFull, setRoomFull] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
+  // Название комнаты: оптимистично от создателя (router state), затем уточняется
+  // сервером в room:joined (источник истины). Пусто → показываем id комнаты.
+  const [roomTitle, setRoomTitle] = useState(initialRoomTitle);
   // Autoplay-гейт (PRD п. 37, US-13): если браузер заблокировал воспроизведение
   // удалённого видео/аудио без жеста, показываем баннер «Включить звук».
   // `playToken` инкрементится по клику и заставляет плитки повторить play() уже
@@ -116,10 +123,12 @@ function RoomCall({ roomId, name }) {
   }, [mediaError, showToast]);
 
   const signaling = useSignaling({
-    onJoined: ({ selfId: id, members, history }) => {
+    onJoined: ({ selfId: id, members, history, title }) => {
       setSelfId(id);
       setRemoteMembers(members);
       setMessages(history);
+      // Название комнаты от сервера (создателя); пустое не затираем — UI покажет id.
+      if (title) setRoomTitle(title);
       // PCM создаём в момент входа: selfId известен, локальные дорожки захвачены
       // (join гейтится по `ready`), поэтому они попадают в каждое соединение.
       const pcm = new PeerConnectionManager({
@@ -127,12 +136,23 @@ function RoomCall({ roomId, name }) {
         localStream: localStreamRef.current,
         sendSignal,
         onRemoteStream: (sid, stream) => setRemoteStreams((prev) => ({ ...prev, [sid]: stream })),
-        onPeerLeft: (sid) =>
+        onPeerLeft: (sid) => {
           setRemoteStreams((prev) => {
             const next = { ...prev };
             delete next[sid];
             return next;
-          }),
+          });
+          setPeerStates((prev) => {
+            if (!(sid in prev)) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
+        },
+        // Состояние пары → индикатор «соединение не установлено» при сбое ICE
+        // (строгий NAT / STUN недоступен), участника не удаляем (задача 20).
+        onPeerState: (sid, state) =>
+          setPeerStates((prev) => (prev[sid] === state ? prev : { ...prev, [sid]: state })),
       });
       pcmRef.current = pcm;
       // Для каждого уже присутствующего участника поднимаем соединение; роль
@@ -166,9 +186,11 @@ function RoomCall({ roomId, name }) {
   useEffect(() => {
     if (connected && ready && !joinedRef.current) {
       joinedRef.current = true;
-      signalingRef.current.joinRoom(roomId, name);
+      // Название шлёт только создатель (есть в router state); сервер игнорирует
+      // его для уже существующей комнаты — название остаётся за создателем.
+      signalingRef.current.joinRoom(roomId, name, initialRoomTitle);
     }
-  }, [connected, ready, roomId, name]);
+  }, [connected, ready, roomId, name, initialRoomTitle]);
 
   // Размонтирование (выход/закрытие вкладки) — закрываем mesh и выходим из комнаты.
   useEffect(
@@ -187,6 +209,18 @@ function RoomCall({ roomId, name }) {
     signalingRef.current?.leaveRoom();
     navigate('/');
   };
+
+  // Копирование ссылки-приглашения (PRD F-03, US-3): URL комнаты = текущий адрес.
+  // Clipboard API доступен в secure context (HTTPS/localhost), который и так
+  // обязателен для getUserMedia; при отказе/недоступности — предупреждающий тост.
+  const handleCopyLink = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      showToast({ type: 'success', text: 'Ссылка-приглашение скопирована' });
+    } catch {
+      showToast({ type: 'warning', text: 'Не удалось скопировать ссылку' });
+    }
+  }, [showToast]);
 
   // Плитка сообщила, что автозапуск заблокирован — поднимаем баннер-жест.
   const handlePlayBlocked = useCallback(() => setAudioBlocked(true), []);
@@ -239,59 +273,88 @@ function RoomCall({ roomId, name }) {
       isSelf: false,
       audioEnabled: true,
       videoEnabled: Boolean(remoteStreams[member.socketId]),
+      // 'failed' → ICE-сбой пары (строгий NAT / STUN недоступен): показываем
+      // индикатор, но участника оставляем (задача 20, TDD §14 TBD-1).
+      connectionFailed: peerStates[member.socketId] === 'failed',
     })),
   ];
 
-  const participants = [{ socketId: selfId ?? 'self', name }, ...remoteMembers];
-
   return (
-    <div className="room">
-      {/* Верхний блок: сцена + чат. Переключение чата меняет только этот блок и
-          не затрагивает нижнюю панель управления. */}
-      <div className={`room__body${chatOpen ? '' : ' room__body--full'}`}>
-        <main className="room__stage">
-          {audioBlocked && (
-            <button className="audio-gate" type="button" onClick={handleEnableAudio}>
-              <span className="audio-gate__icon" aria-hidden="true">
-                <svg
-                  viewBox="0 0 24 24"
-                  width="18"
-                  height="18"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
-                  <path d="M16 9a5 5 0 0 1 0 6" />
-                  <path d="M19.364 18.364a9 9 0 0 0 0-12.728" />
-                </svg>
-              </span>
-              Включить звук
-            </button>
-          )}
-          <VideoGrid tiles={tiles} onPlayBlocked={handlePlayBlocked} playToken={playToken} />
-        </main>
-        {chatOpen && (
-          <aside className="room__side">
-            <ParticipantList members={participants} selfId={selfId ?? 'self'} />
-            <ChatPanel messages={messages} onSend={signaling.sendChat} />
-          </aside>
-        )}
+    <div className={`room${chatOpen ? '' : ' room--no-chat'}`}>
+      {/* Левая колонка: контент (с отступами) + нижняя панель на всю ширину.
+          Переключение чата меняет ширину этой колонки, но панель всегда снизу. */}
+      <div className="room__main">
+        {/* Контент с внутренними отступами; панель кнопок ниже идёт без них. */}
+        <div className="room__content">
+          {/* Брендинг сверху: «Разработано» + лого Fora Soft (как в футере старт-экрана). */}
+          <header className="room__topbar">
+            <span className="room__topbar-label">Разработано</span>
+            <a
+              className="room__topbar-link"
+              href="https://www.forasoft.com/"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <img className="room__topbar-logo" src="/forasoft-logo-full.svg" alt="Fora Soft" />
+            </a>
+          </header>
+
+          <main className="room__stage">
+            {audioBlocked && (
+              <button className="audio-gate" type="button" onClick={handleEnableAudio}>
+                <span className="audio-gate__icon" aria-hidden="true">
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="18"
+                    height="18"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
+                    <path d="M16 9a5 5 0 0 1 0 6" />
+                    <path d="M19.364 18.364a9 9 0 0 0 0-12.728" />
+                  </svg>
+                </span>
+                Включить звук
+              </button>
+            )}
+            <VideoGrid tiles={tiles} onPlayBlocked={handlePlayBlocked} playToken={playToken} />
+          </main>
+          {/* Мета-строка над панелью: слева — название комнаты, справа — число участников. */}
+          <div className="room__meta">
+            <span className="room__meta-name" title={roomTitle || roomId}>
+              {roomTitle || roomId}
+            </span>
+            <span className="room__meta-count">Участников: {1 + remoteMembers.length}</span>
+          </div>
+        </div>
+        {/* Панель управления — на всю ширину левой колонки, вплотную к левому краю чата. */}
+        <Controls
+          audioEnabled={audioEnabled}
+          videoEnabled={videoEnabled}
+          hasMic={hasMic}
+          hasCam={hasCam}
+          chatOpen={chatOpen}
+          onToggleAudio={toggleAudio}
+          onToggleVideo={toggleVideo}
+          onToggleChat={() => setChatOpen((open) => !open)}
+          onCopyLink={handleCopyLink}
+          onLeave={handleLeave}
+        />
       </div>
-      {/* Нижняя панель управления — всегда видима, во всю ширину, вне потока сцены/чата. */}
-      <Controls
-        audioEnabled={audioEnabled}
-        videoEnabled={videoEnabled}
-        hasMic={hasMic}
-        hasCam={hasCam}
-        chatOpen={chatOpen}
-        onToggleAudio={toggleAudio}
-        onToggleVideo={toggleVideo}
-        onToggleChat={() => setChatOpen((open) => !open)}
-        onLeave={handleLeave}
-      />
+      {/* Чат — прямоугольник во всю высоту справа (референс). */}
+      {chatOpen && (
+        <aside className="room__side">
+          <ChatPanel
+            messages={messages}
+            onSend={signaling.sendChat}
+            onClose={() => setChatOpen(false)}
+          />
+        </aside>
+      )}
     </div>
   );
 }

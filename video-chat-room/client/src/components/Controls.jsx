@@ -8,6 +8,7 @@
  * @property {() => void} onToggleAudio - тумблер микрофона (PRD F-09).
  * @property {() => void} onToggleVideo - тумблер камеры (PRD F-10).
  * @property {() => void} onToggleChat - показать/скрыть панель чата.
+ * @property {() => void} [onCopyLink] - копировать ссылку-приглашение (PRD F-03, US-3).
  * @property {() => void} onLeave - выход из комнаты (PRD F-17, US-10).
  */
 
@@ -106,6 +107,24 @@ const ChatIcon = () => (
   </svg>
 );
 
+/** Иконка ссылки-приглашения (lucide link). */
+const LinkIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="20"
+    height="20"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </svg>
+);
+
 /** Иконка выхода из комнаты (lucide log-out). */
 const LeaveIcon = () => (
   <svg
@@ -144,6 +163,7 @@ export default function Controls({
   onToggleAudio,
   onToggleVideo,
   onToggleChat,
+  onCopyLink,
   onLeave,
 }) {
   return (
@@ -174,13 +194,23 @@ export default function Controls({
 
       <button
         type="button"
-        className={`ctrl-btn${chatOpen ? ' ctrl-btn--active' : ''}`}
+        className="ctrl-btn"
         onClick={onToggleChat}
         aria-pressed={chatOpen}
         aria-label={chatOpen ? 'Скрыть чат' : 'Показать чат'}
         title={chatOpen ? 'Скрыть чат' : 'Показать чат'}
       >
         <ChatIcon />
+      </button>
+
+      <button
+        type="button"
+        className="ctrl-btn"
+        onClick={onCopyLink}
+        aria-label="Скопировать ссылку-приглашение"
+        title="Скопировать ссылку-приглашение"
+      >
+        <LinkIcon />
       </button>
 
       <button

@@ -25,7 +25,7 @@ import { io } from 'socket.io-client';
  * @typedef {'connecting'|'connected'|'error'} SignalingStatus
  *
  * @typedef {Object} SignalingHandlers
- * @property {(data: { selfId: string, members: Array<{socketId:string,name:string}>, history: Array }) => void} [onJoined]      `room:joined` — успешный вход (состав без себя + история, F-14).
+ * @property {(data: { selfId: string, members: Array<{socketId:string,name:string}>, history: Array, title: string }) => void} [onJoined]      `room:joined` — успешный вход (состав без себя + история + название комнаты, F-14).
  * @property {(data: { roomId: string }) => void} [onRoomFull]        `room:full` — лимит 4 исчерпан (US-5).
  * @property {(data: { socketId: string, name: string }) => void} [onPeerJoined]  `room:peer-joined` — новый участник (триггер mesh-offer, §7.1).
  * @property {(data: { socketId: string }) => void} [onPeerLeft]      `room:peer-left` — участник вышел/отключился (US-10/US-11).
@@ -105,9 +105,16 @@ export function useSignaling(handlers = {}) {
   // Все эмиттеры безопасны до подключения: socket.io буферизует исходящие события
   // и отправит их после установления связи.
 
-  /** Вход в комнату: `room:join {roomId, name}` (F-01/F-04). */
-  const joinRoom = (roomId, name) => {
-    socketRef.current?.emit('room:join', { roomId, name });
+  /**
+   * Вход в комнату: `room:join {roomId, name, title}` (F-01/F-04).
+   * `title` — название комнаты от создателя; у входящих по ссылке пустое (сервер
+   * игнорирует его для уже существующей комнаты).
+   * @param {string} roomId
+   * @param {string} name
+   * @param {string} [title]
+   */
+  const joinRoom = (roomId, name, title = '') => {
+    socketRef.current?.emit('room:join', { roomId, name, title });
   };
 
   /** Явный выход: `room:leave` (F-17, US-10). */

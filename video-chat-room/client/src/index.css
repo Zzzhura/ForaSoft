@@ -299,6 +299,10 @@ body {
   gap: 0.75rem;
   width: 100%;
   height: 100%;
+  /* Плитки центрируются в своих ячейках и не растягиваются на всю область —
+   * масштаб как в референсе chat.forasoft.com (центрированная карточка 16:9). */
+  justify-items: center;
+  align-items: center;
 }
 
 .video-grid--1 {
@@ -320,10 +324,15 @@ body {
 .tile {
   position: relative;
   overflow: hidden;
-  /* Плитка заполняет свою grid-ячейку (а не навязывает 16:9), иначе при скрытом
-   * чате одиночная плитка на всю ширину перерастает экран и выталкивает панель
-   * контролов за вьюпорт. Кадрирование берёт на себя object-fit: cover. */
   min-height: 0;
+  /* Масштаб как в референсе: пропорция 16:9, центрирование и ограничение размера
+   * вместо растягивания на всю ячейку. `max-height: 100%` не даёт плитке
+   * перерасти сцену по высоте (панель контролов теперь вынесена в отдельную
+   * нижнюю полосу, поэтому переполнения вьюпорта не возникает). */
+  width: 100%;
+  max-width: 760px;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -367,17 +376,51 @@ body {
   color: var(--text-strong);
 }
 
-.tile__mic-off {
+/* Индикаторы выключенных устройств (mic/cam off) — у правого края, красные. */
+.tile__indicators {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: auto;
   color: var(--danger);
 }
 
 .tile__name {
+  flex: 1;
+  min-width: 0;
   font-size: 0.875rem;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Маркер собственной плитки «(Вы)» рядом с ником. */
+.tile__you {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/*
+ * Индикатор недостижимого peer (задача 20, PRD п. 34, TDD §14 TBD-1): пара не
+ * поднялась (строгий NAT без TURN / STUN недоступен). Участника не удаляем —
+ * только помечаем плитку; остальные соединения работают.
+ */
+.tile__status {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 1rem);
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-strong);
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-pill);
 }
 
 /*
@@ -440,15 +483,131 @@ body {
   color: var(--text-muted);
 }
 
+/* Хедер чата: иконка + заголовок + кнопка закрытия (референс). */
+.chat__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat__header-icon {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.chat__title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.chat__close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.chat__close:hover {
+  color: var(--text-strong);
+  background: var(--surface);
+}
+
+/* Пустое состояние ленты — центрированная подсказка (референс). */
+.chat__empty {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+}
+
+.chat__empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.chat__empty-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.chat__empty-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
 .chat__form {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
   padding: 0.75rem;
-  border-top: 1px solid var(--border);
 }
 
 .chat__form .field {
   flex: 1;
+}
+
+/* Кнопка отправки: по умолчанию серая (неактивна), при вводе — акцентная (синяя). */
+.chat__send {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.chat__send:not(:disabled) {
+  background: var(--accent);
+  color: var(--text-strong);
+}
+
+.chat__send:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+
+.chat__send:not(:disabled):active {
+  transform: scale(0.95);
+}
+
+.chat__send:disabled {
+  cursor: default;
 }
 
 .participants {
@@ -497,7 +656,7 @@ body {
   justify-content: center;
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
@@ -521,11 +680,16 @@ body {
   cursor: not-allowed;
 }
 
-/* Выключенное устройство (mic/cam off) — красный акцент (PRD п. 16). */
+/* Выключенное устройство (mic/cam off) — сплошной красный (PRD п. 16). */
 .ctrl-btn--off {
-  background: rgba(239, 68, 68, 0.15);
+  background: var(--danger);
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--text-strong);
+}
+
+.ctrl-btn--off:hover:not(:disabled) {
+  filter: brightness(1.1);
+  border-color: var(--danger);
 }
 
 /* Активная кнопка-переключатель (например, открытый чат). */
@@ -548,37 +712,98 @@ body {
 }
 
 /*
- * Раскладка экрана комнаты (задача 18): сверху тело (сцена + чат-сайдбар),
- * снизу — всегда видимая панель управления во всю ширину. Переключение чата
- * меняет только тело и не влияет на нижнюю панель. Десктоп от 1024px (PRD цель 7).
+ * Раскладка экрана комнаты (задача 18): слева — колонка со сценой (видео) и
+ * нижней панелью управления, справа — чат во всю высоту (референс
+ * chat.forasoft.com). Десктоп от 1024px (PRD цель 7).
  */
 .room {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  height: 100vh;
+}
+
+/* Чат скрыт — сцена с панелью на всю ширину (переключатель в Controls). */
+.room--no-chat {
+  grid-template-columns: 1fr;
+}
+
+/* Левая колонка: контент с отступами (растягивается) + панель кнопок на всю ширину. */
+.room__main {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Контент колонки — топбар, сцена, мета — с внутренними отступами. Панель кнопок
+ * вынесена отдельным элементом ниже без отступов, поэтому идёт во всю ширину. */
+.room__content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   gap: 1rem;
-  height: 100vh;
+  min-height: 0;
   padding: 1rem;
 }
 
-/* Тело комнаты: слева сцена (видеосетка), справа сайдбар (участники + чат). */
-.room__body {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr 340px;
+/* Брендинг сверху: «Разработано» + лого Fora Soft (как в футере старт-экрана). */
+.room__topbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  user-select: none;
+}
+
+.room__topbar-link {
+  display: inline-flex;
+  align-items: center;
+  transition: opacity 0.2s ease;
+}
+
+.room__topbar-link:hover {
+  opacity: 0.8;
+}
+
+.room__topbar-logo {
+  display: block;
+  width: 80px;
+  height: 20px;
+  border-radius: 3px;
+}
+
+/* Мета-строка над панелью кнопок: слева название комнаты, справа число участников. */
+.room__meta {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 1rem;
 }
 
-/* Чат скрыт — сцена на всю ширину (переключатель в Controls). */
-.room__body--full {
-  grid-template-columns: 1fr;
+.room__meta-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.room__meta-count {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
 }
 
 .room__stage {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  flex: 1;
   min-height: 0;
 }
 
@@ -619,26 +844,19 @@ body {
   min-height: 0;
 }
 
-/* Нижняя панель: всегда видима, фиксированной высоты (не сжимается потоком). */
-.room > .controls {
+/* Нижняя панель: всегда видима внизу левой колонки, вплотную к чату справа.
+ * Без скруглений и внешнего бордера — плоский прямоугольник, как панель чата. */
+.room__main .controls {
   flex-shrink: 0;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
 }
 
+/* Чат — прямоугольник во всю высоту без внешних бордеров (референс). */
 .room__side {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-
-.room__side .participants {
-  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .room__side .chat {

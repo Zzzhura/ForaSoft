@@ -1,5 +1,5 @@
 import { roomRegistry } from './rooms.js';
-import { validateName } from './validation.js';
+import { validateName, sanitizeRoomTitle } from './validation.js';
 import { emitSystemMessage } from './chat.js';
 
 /** Разумный потолок длины идентификатора комнаты (защита от мусорного ввода). */
@@ -46,9 +46,12 @@ export function registerRoomHandlers(io, socket) {
       return;
     }
     const name = nameResult.value;
+    // Название комнаты задаёт только создатель; у входящих по ссылке оно пустое и
+    // игнорируется (комната уже создана). Санитизация — тот же XSS-щит (п. 39).
+    const title = sanitizeRoomTitle(payload.title);
 
     // Атомарная проверка лимита и вставка (см. RoomRegistry.joinRoom, задача 3).
-    const join = roomRegistry.joinRoom(roomId, { socketId: socket.id, name });
+    const join = roomRegistry.joinRoom(roomId, { socketId: socket.id, name }, title);
     if (!join.ok) {
       socket.emit('room:full', { roomId });
       return;
@@ -66,6 +69,8 @@ export function registerRoomHandlers(io, socket) {
       selfId: socket.id,
       members: others,
       history: roomRegistry.getHistory(roomId),
+      // Название комнаты (создателя) — источник истины на сервере (F-14 late-joiner).
+      title: join.title,
     });
 
     // Остальным — что появился новый участник (триггер offer по правилу initiator, §7.1).

@@ -14,11 +14,13 @@ import EntryScreen from '../components/EntryScreen.jsx';
 export default function StartScreen() {
   const navigate = useNavigate();
 
-  // Создаём комнату с новым уникальным id и переходим на её URL без имени —
-  // имя вводится отдельным шагом на экране комнаты (US-4).
-  const handleCreateRoom = () => {
+  // Создаём комнату с новым уникальным id и переходим на её URL. Введённое
+  // название несём в router state как `roomTitle` — оно станет названием комнаты
+  // (его задаёт создатель); имя пользователя вводится отдельным шагом на экране
+  // комнаты (US-4). На клиенте ничего не сохраняем (без localStorage, TDD §5).
+  const handleCreateRoom = (roomTitle) => {
     const roomId = nanoid(8);
-    navigate(`/room/${roomId}`);
+    navigate(`/room/${roomId}`, { state: { roomTitle } });
   };
 
   return (

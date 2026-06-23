@@ -8,6 +8,7 @@ import VideoTile from './VideoTile.jsx';
  * @property {boolean} [isSelf] - признак собственной плитки (self-view).
  * @property {boolean} [audioEnabled] - состояние микрофона участника.
  * @property {boolean} [videoEnabled] - состояние камеры участника.
+ * @property {boolean} [connectionFailed] - P2P-соединение не установлено (задача 20).
  */
 
 /**
@@ -35,6 +36,7 @@ export default function VideoGrid({ tiles, onPlayBlocked, playToken = 0 }) {
           isSelf={tile.isSelf}
           audioEnabled={tile.audioEnabled}
           videoEnabled={tile.videoEnabled}
+          connectionFailed={tile.connectionFailed}
           onPlayBlocked={onPlayBlocked}
           playToken={playToken}
         />

@@ -3,6 +3,9 @@ import { config } from './config.js';
 /** Максимальная длина отображаемого имени в видимых символах (PRD п. 38). */
 export const NAME_MAX_LEN = 30;
 
+/** Максимальная длина названия комнаты в видимых символах. */
+export const ROOM_TITLE_MAX_LEN = 50;
+
 /**
  * @typedef {{ ok: true, value: string }} ValidationOk
  * @typedef {{ ok: false, code: string, message: string }} ValidationError
@@ -67,6 +70,23 @@ export function validateName(raw) {
   // (иначе & → &amp; искусственно раздувает длину).
   const truncated = truncateByCodePoints(cleaned, NAME_MAX_LEN);
   return { ok: true, value: escapeHtml(truncated) };
+}
+
+/**
+ * Санитизирует название комнаты, заданное создателем. В отличие от имени, пустое
+ * значение допустимо (UI откатывается на идентификатор комнаты): входящие по
+ * ссылке не передают название. Очистка: trim → удаление управляющих символов →
+ * обрезка до лимита → HTML-экранирование (XSS-щит, п. 39).
+ *
+ * @param {unknown} raw
+ * @returns {string} безопасное название (возможно пустое).
+ */
+export function sanitizeRoomTitle(raw) {
+  const cleaned = stripControlChars(String(raw ?? '').trim());
+  if (cleaned.length === 0) {
+    return '';
+  }
+  return escapeHtml(truncateByCodePoints(cleaned, ROOM_TITLE_MAX_LEN));
 }
 
 /**

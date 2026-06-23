@@ -18,6 +18,7 @@ import { config } from './config.js';
 /**
  * @typedef {Object} Room
  * @property {string} id
+ * @property {string} title      Название комнаты, заданное создателем (может быть пустым).
  * @property {Map<string, Member>} members
  * @property {Message[]} chatHistory
  */
@@ -50,13 +51,15 @@ export class RoomRegistry {
    *
    * @param {string} roomId
    * @param {Member} member
-   * @returns {{ ok: true, members: Member[] } | { ok: false, reason: 'full' }}
+   * @param {string} [title]  Название комнаты; учитывается только при её создании.
+   * @returns {{ ok: true, members: Member[], title: string } | { ok: false, reason: 'full' }}
    */
-  joinRoom(roomId, member) {
+  joinRoom(roomId, member, title = '') {
     let room = this.rooms.get(roomId);
     if (!room) {
       // Новый/несуществующий ID → моментально создаём пустую комнату (подзадача 3.3).
-      room = { id: roomId, members: new Map(), chatHistory: [] };
+      // Название задаёт создатель (первый участник); последующие входы его не меняют.
+      room = { id: roomId, title, members: new Map(), chatHistory: [] };
       this.rooms.set(roomId, room);
     }
 
@@ -68,7 +71,7 @@ export class RoomRegistry {
     room.members.set(member.socketId, { socketId: member.socketId, name: member.name });
     // --- Конец критической секции. ---
 
-    return { ok: true, members: this.#snapshotMembers(room) };
+    return { ok: true, members: this.#snapshotMembers(room), title: room.title };
   }
 
   /**

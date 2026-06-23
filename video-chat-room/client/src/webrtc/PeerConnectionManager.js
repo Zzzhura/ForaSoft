@@ -31,14 +31,27 @@ export class PeerConnectionManager {
    *        Появился/обновился удалённый поток — UI рисует плитку (10.2).
    * @param {(socketId: string) => void} [options.onPeerLeft]
    *        Соединение с участником закрыто (removePeer) — UI убирает плитку (10.2).
+   * @param {(socketId: string, state: RTCPeerConnectionState) => void} [options.onPeerState]
+   *        Сменилось состояние соединения пары (задача 20): UI показывает индикатор
+   *        «соединение не установлено» при 'failed' (строгий NAT / STUN недоступен),
+   *        не удаляя участника (TDD §13/§14 TBD-1).
    * @param {RTCConfiguration} [options.rtcConfig]  Переопределение ICE-конфига (тесты/env).
    */
-  constructor({ selfId, localStream, sendSignal, onRemoteStream, onPeerLeft, rtcConfig }) {
+  constructor({
+    selfId,
+    localStream,
+    sendSignal,
+    onRemoteStream,
+    onPeerLeft,
+    onPeerState,
+    rtcConfig,
+  }) {
     this.selfId = selfId;
     this.localStream = localStream ?? null;
     this.sendSignal = sendSignal;
     this.onRemoteStream = onRemoteStream;
     this.onPeerLeft = onPeerLeft;
+    this.onPeerState = onPeerState;
     this.rtcConfig = rtcConfig ?? DEFAULT_RTC_CONFIG;
 
     /**
@@ -93,6 +106,15 @@ export class PeerConnectionManager {
       if (stream) {
         this.onRemoteStream?.(socketId, stream);
       }
+    };
+
+    // Деградация без падения комнаты (задача 20, TDD §13): сбой ICE одной пары
+    // (строгий NAT без TURN / STUN недоступен) переводит её connectionState в
+    // 'failed'. Сообщаем UI для индикатора, но участника НЕ удаляем и остальные
+    // соединения не трогаем — каждое pc независимо (TDD §14 TBD-1). ICE-restart
+    // не делаем (TBD-3, PRD F-18: возврат только вручную).
+    pc.onconnectionstatechange = () => {
+      this.onPeerState?.(socketId, pc.connectionState);
     };
 
     const shouldOffer = initiator ?? this.isInitiator(socketId);
@@ -281,6 +303,7 @@ export class PeerConnectionManager {
   #teardown(pc) {
     pc.onicecandidate = null;
     pc.ontrack = null;
+    pc.onconnectionstatechange = null;
     pc.close();
   }
 }
