@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p prds/video-chat-room)",
+      "Bash(mv generated/design-video-chat-room.md prds/video-chat-room/design-video-chat-room.md)",
+      "Bash(mv generated/impl-video-chat-room.md prds/video-chat-room/impl-video-chat-room.md)",
+      "Bash(rmdir generated *)"
+    ]
+  }
+}
