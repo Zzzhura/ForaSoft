@@ -7,6 +7,8 @@ import { useEffect, useRef } from 'react';
  * @property {boolean} [isSelf] - self-view: playback заглушён (анти-эхо), видео зеркалится.
  * @property {boolean} [audioEnabled] - false → иконка перечёркнутого микрофона (PRD п. 16, US-7).
  * @property {boolean} [videoEnabled] - false → заглушка-силуэт поверх видео (PRD п. 18, US-12).
+ * @property {() => void} [onPlayBlocked] - вызывается, когда браузер заблокировал автозапуск (PRD п. 37, US-13).
+ * @property {number} [playToken] - смена значения повторяет play() (жест «Включить звук», задача 19).
  */
 
 /**
@@ -25,16 +27,31 @@ export default function VideoTile({
   isSelf = false,
   audioEnabled = true,
   videoEnabled = true,
+  onPlayBlocked,
+  playToken = 0,
 }) {
   const videoRef = useRef(null);
 
   // srcObject нельзя задать атрибутом — присваиваем императивно (TDD §4.3).
+  // Дополнительно явно запускаем play(): для удалённой плитки (со звуком)
+  // браузер может отклонить автозапуск без жеста (PRD п. 37, US-13). При отказе
+  // сообщаем наверх (`onPlayBlocked`) — RoomScreen покажет баннер «Включить звук».
+  // Self-view заглушён (`muted`), его автозапуск не блокируется. Повтор play()
+  // по смене `playToken` происходит уже внутри пользовательского жеста.
   useEffect(() => {
     const el = videoRef.current;
-    if (el && el.srcObject !== stream) {
+    if (!el) return;
+    if (el.srcObject !== stream) {
       el.srcObject = stream;
     }
-  }, [stream]);
+    if (!stream) return;
+    const playback = el.play();
+    if (playback && typeof playback.catch === 'function') {
+      playback.catch(() => {
+        if (!isSelf) onPlayBlocked?.();
+      });
+    }
+  }, [stream, isSelf, onPlayBlocked, playToken]);
 
   return (
     <div className="tile">

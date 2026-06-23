@@ -1,5 +1,3 @@
-import CopyLinkButton from './CopyLinkButton.jsx';
-
 /**
  * @typedef {object} ControlsProps
  * @property {boolean} audioEnabled - микрофон включён.
@@ -184,8 +182,6 @@ export default function Controls({
       >
         <ChatIcon />
       </button>
-
-      <CopyLinkButton />
 
       <button
         type="button"

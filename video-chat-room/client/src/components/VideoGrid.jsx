@@ -15,10 +15,13 @@ import VideoTile from './VideoTile.jsx';
  * self-view идёт отдельной плиткой с признаком `isSelf` (PRD F-07, TDD §4.5,
  * задача 15). Раскладка выбирается по числу плиток через модификатор класса.
  *
- * @param {{ tiles: Tile[] }} props
+ * `onPlayBlocked`/`playToken` пробрасываются в плитки для autoplay-гейта
+ * (PRD п. 37, US-13, задача 19).
+ *
+ * @param {{ tiles: Tile[], onPlayBlocked?: () => void, playToken?: number }} props
  * @returns {JSX.Element}
  */
-export default function VideoGrid({ tiles }) {
+export default function VideoGrid({ tiles, onPlayBlocked, playToken = 0 }) {
   // Лимит комнаты — 4 (mesh), сетка не строит больше 2×2 (PRD F-05/F-07).
   const count = Math.min(tiles.length, 4);
 
@@ -32,6 +35,8 @@ export default function VideoGrid({ tiles }) {
           isSelf={tile.isSelf}
           audioEnabled={tile.audioEnabled}
           videoEnabled={tile.videoEnabled}
+          onPlayBlocked={onPlayBlocked}
+          playToken={playToken}
         />
       ))}
     </div>

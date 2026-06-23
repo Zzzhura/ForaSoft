@@ -8,43 +8,6 @@ let toastSeq = 0;
 /** @type {React.Context<{ showToast: (t: { type?: 'success'|'warning', text: string }) => void } | null>} */
 const ToastContext = createContext(null);
 
-/** Иконка-галочка (успех). */
-const CheckIcon = () => (
-  <svg
-    viewBox="0 0 24 24"
-    width="20"
-    height="20"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M21.801 10A10 10 0 1 1 17 3.335" />
-    <path d="m9 11 3 3L22 4" />
-  </svg>
-);
-
-/** Иконка-предупреждение. */
-const WarnIcon = () => (
-  <svg
-    viewBox="0 0 24 24"
-    width="20"
-    height="20"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
-    <path d="M12 9v4" />
-    <path d="M12 17h.01" />
-  </svg>
-);
-
 /**
  * Хук доступа к тостам. Должен использоваться внутри `ToastProvider`.
  * @returns {{ showToast: (t: { type?: 'success'|'warning', text: string }) => void }}
@@ -87,9 +50,6 @@ export function ToastProvider({ children }) {
       <div className="toasts">
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast toast--${toast.type}`} role="status">
-            <span className="toast__icon">
-              {toast.type === 'warning' ? <WarnIcon /> : <CheckIcon />}
-            </span>
             <span className="toast__text">{toast.text}</span>
           </div>
         ))}
