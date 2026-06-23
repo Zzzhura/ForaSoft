@@ -10,6 +10,9 @@ build/
 .env.local
 .env.*.local
 
+# Local TLS certificates (generated via npm run certs)
+certs/
+
 # Logs
 *.log
 npm-debug.log*

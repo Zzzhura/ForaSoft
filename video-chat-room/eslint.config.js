@@ -19,8 +19,18 @@ export default [
     },
   },
   {
+    // Конфиг-файлы (vite.config.js и т.п.) исполняются в Node, а не в браузере.
+    files: ['**/*.config.{js,mjs,cjs}'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+  },
+  {
     // Client — browser + React (JSX)
     files: ['client/**/*.{js,jsx}'],
+    ignores: ['client/**/*.config.{js,mjs,cjs}'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

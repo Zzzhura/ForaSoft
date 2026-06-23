@@ -77,6 +77,28 @@ npm run dev:client
 
 Проверка сервера: <http://localhost:3001/healthz> → `{ "status": "ok" }`.
 
+## HTTPS / secure context
+
+`getUserMedia` и WebRTC работают только в **secure context** — это `https://…`
+**или** `http://localhost`. То есть на `localhost` всё работает по HTTP без настройки.
+
+HTTPS нужен, когда вы открываете приложение **не с localhost** (например, по LAN-IP
+с другого устройства) или хотите паритет с продом. Включается одной командой:
+
+```bash
+npm run certs          # самоподписанный сертификат → certs/ (localhost, 127.0.0.1)
+npm run dev            # теперь сервер и Vite поднимаются по HTTPS автоматически
+```
+
+Логика общая для сервера и клиента: **если `certs/localhost-*.pem` существуют —
+оба поднимаются по HTTPS; если нет — по HTTP** (localhost остаётся secure context).
+Никакой ручной правки конфигов не нужно. Браузер покажет предупреждение о доверии
+к self-signed — это ожидаемо; для доверенного сертификата используйте
+[mkcert](https://github.com/FiloSottile/mkcert) и положите его файлы в `certs/`
+под теми же именами (или задайте пути через `SSL_KEY_FILE` / `SSL_CERT_FILE`).
+
+> Каталог `certs/` в `.gitignore` — сертификаты не коммитятся.
+
 ## Сборка (prod)
 
 ```bash
@@ -103,6 +125,8 @@ npm run format         # или format:check
 | `CHAT_HISTORY_CAP` | `200`                          | Размер буфера истории чата на комнату       |
 | `MESSAGE_MAX_LEN`  | `1000`                         | Максимальная длина сообщения                |
 | `STUN_URLS`        | `stun:stun.l.google.com:19302` | STUN (справочно; клиент берёт из VITE\_\*)  |
+| `SSL_KEY_FILE`     | `certs/localhost-key.pem`      | TLS-ключ для HTTPS (опционально)            |
+| `SSL_CERT_FILE`    | `certs/localhost-cert.pem`     | TLS-сертификат для HTTPS (опционально)      |
 
 **client/.env**
 

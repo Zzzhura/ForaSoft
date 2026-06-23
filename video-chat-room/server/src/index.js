@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -25,7 +26,10 @@ app.get('*', (_req, res) => {
   });
 });
 
-const server = http.createServer(app);
+// HTTPS, если есть сертификат (secure context для getUserMedia/WebRTC),
+// иначе HTTP — на localhost этого достаточно как secure context (TDD §10/§12).
+const protocol = config.tls ? 'https' : 'http';
+const server = config.tls ? https.createServer(config.tls, app) : http.createServer(app);
 
 const io = new SocketIOServer(server, {
   cors: { origin: config.clientOrigin },
@@ -42,7 +46,10 @@ io.on('connection', (socket) => {
 });
 
 server.listen(config.port, () => {
-  console.log(`[server] listening on http://localhost:${config.port}`);
+  console.log(`[server] listening on ${protocol}://localhost:${config.port}`);
+  console.log(
+    `[server] secure context: ${config.tls ? 'HTTPS (cert loaded)' : 'HTTP (localhost only)'}`,
+  );
   console.log(`[server] max members per room: ${config.maxMembers}`);
 });
 
