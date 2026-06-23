@@ -1,8 +1,22 @@
+import { randomUUID } from 'node:crypto';
 import { roomRegistry } from './rooms.js';
 import { validateName } from './validation.js';
 
 /** Разумный потолок длины идентификатора комнаты (защита от мусорного ввода). */
 const MAX_ROOM_ID_LEN = 64;
+
+/**
+ * Создаёт системное сообщение чата (вход/выход участника, PRD F-15, US-9).
+ * Текст формируется на сервере из уже экранированного имени, поэтому безопасен.
+ * @param {string} text
+ * @returns {{ id: string, type: 'system', text: string, ts: number }}
+ */
+const createSystemMessage = (text) => ({
+  id: randomUUID(),
+  type: 'system',
+  text,
+  ts: Date.now(),
+});
 
 /**
  * Нормализует roomId из клиента: строка, trim, ограничение длины.
@@ -71,4 +85,47 @@ export function registerRoomHandlers(io, socket) {
     // Остальным — что появился новый участник (триггер offer по правилу initiator, §7.1).
     socket.to(roomId).emit('room:peer-joined', { socketId: socket.id, name });
   });
+
+  // Явный выход и обрыв соединения обрабатываются одинаково (PRD F-18, US-10/US-11):
+  // не различаем «вышел» и «потерял соединение».
+  socket.on('room:leave', () => handleLeave(io, socket));
+  socket.on('disconnect', () => handleLeave(io, socket));
+}
+
+/**
+ * Выводит участника из комнаты по выходу или обрыву (TDD §7.2).
+ * Идемпотентна: повторный вызов (например, `room:leave`, а следом `disconnect`)
+ * безопасен, т.к. после первого вызова `socket.data.roomId` очищается.
+ *
+ * Если комната опустела — `RoomRegistry` удаляет её вместе с историей (задача 3),
+ * оповещать некого. Иначе оставшимся уходит `room:peer-left` и системное
+ * сообщение «<имя> покинул комнату» (единая формулировка, F-18).
+ *
+ * @param {import('socket.io').Server} io
+ * @param {import('socket.io').Socket} socket
+ */
+function handleLeave(io, socket) {
+  const roomId = socket.data.roomId;
+  if (!roomId) {
+    return; // сокет не состоял в комнате (или уже обработан)
+  }
+  const name = socket.data.name;
+
+  const { roomDeleted } = roomRegistry.leaveRoom(roomId, socket.id);
+  socket.leave(roomId);
+  // Сбрасываем данные, чтобы парный disconnect не сработал повторно.
+  delete socket.data.roomId;
+  delete socket.data.name;
+
+  if (roomDeleted) {
+    return; // комната и история удалены — оповещать некого
+  }
+
+  // Плитка участника исчезает у остальных (F-17).
+  io.to(roomId).emit('room:peer-left', { socketId: socket.id });
+
+  // Системное сообщение в чат + история (F-15, US-9); late-joiner увидит его (F-14).
+  const sysMsg = createSystemMessage(`${name} покинул комнату`);
+  roomRegistry.addMessage(roomId, sysMsg);
+  io.to(roomId).emit('chat:message', sysMsg);
 }
