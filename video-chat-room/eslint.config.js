@@ -28,6 +28,15 @@ export default [
     },
   },
   {
+    // E2E-тесты (Playwright) исполняются в Node.
+    files: ['e2e/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+  },
+  {
     // Client — browser + React (JSX)
     files: ['client/**/*.{js,jsx}'],
     ignores: ['client/**/*.config.{js,mjs,cjs}'],

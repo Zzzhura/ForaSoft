@@ -5,6 +5,11 @@ node_modules/
 dist/
 build/
 
+# Playwright E2E artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+
 # Env files (commit only *.env.example)
 .env
 .env.local
