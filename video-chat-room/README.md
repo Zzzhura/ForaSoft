@@ -133,3 +133,34 @@ npm run format         # или format:check
 | Переменная       | По умолчанию                   | Назначение                  |
 | ---------------- | ------------------------------ | --------------------------- |
 | `VITE_STUN_URLS` | `stun:stun.l.google.com:19302` | STUN-серверы для WebRTC ICE |
+
+## Деплой (Docker) и CI
+
+Один процесс: Node-сервер раздаёт собранный SPA (`client/dist`) и поднимает
+Socket.io на том же origin (TDD §12). TLS терминируется reverse-proxy'ем
+(`nginx`), который проксирует **WSS снаружи → ws внутрь**; сам контейнер слушает
+HTTP на `3001`.
+
+```bash
+docker build -t video-chat-room .      # multi-stage: сборка клиента + прод-сервер
+docker run -p 3001:3001 video-chat-room
+```
+
+Полная композиция с reverse-proxy (TLS + WSS):
+
+```bash
+# 1. Положите сертификат в deploy/certs/{fullchain,privkey}.pem
+# 2. Укажите домен в deploy/nginx.conf (server_name) и CLIENT_ORIGIN в docker-compose.yml
+docker compose up --build
+```
+
+- `Dockerfile` — multi-stage образ (один процесс).
+- `deploy/nginx.conf` — TLS-терминация + апгрейд WebSocket для `/socket.io`.
+- `docker-compose.yml` — `app` + `nginx` proxy.
+
+**CI** (`.github/workflows/ci.yml`, на push/PR в `main`):
+
+- `lint-test-build` — `lint` + `format:check`, unit + integration тесты сервера,
+  unit-тесты клиента, сборка `client/dist` (артефакт).
+- `e2e` — Playwright (fake-медиа Chromium) на собранном приложении.
+- `docker-build` — проверка сборки Docker-образа.

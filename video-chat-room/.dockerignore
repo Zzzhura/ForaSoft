@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+client/dist
+build
+test-results
+playwright-report
+playwright/.cache
+e2e
+certs
+.env
+.env.local
+.env.*.local
+.git
+.github
+*.log
+.DS_Store
