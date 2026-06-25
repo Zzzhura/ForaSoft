@@ -84,6 +84,37 @@ test.describe('Видеочат-комната E2E', () => {
     await bob.context.close();
   });
 
+  test('US-6: камера, включённая уже в звонке, видна другому участнику (без чёрной плитки)', async ({
+    browser,
+  }) => {
+    // Частый сценарий: оба входят с ВЫКЛЮЧЕННОЙ камерой (состояние по умолчанию),
+    // соединение устанавливается на «пустом» видео-трансивере, камера включается
+    // позже через replaceTrack без renegotiation. Регрессия: входящая видеодорожка
+    // не попадала в отображаемый поток у удалённого участника — чёрная плитка.
+    const alice = await newParticipant(browser);
+    await alice.page.goto('/');
+    await alice.page.getByPlaceholder('Введите название комнаты').fill(ROOM_NAME);
+    await alice.page.getByRole('button', { name: 'Создать комнату' }).click();
+    await enterName(alice.page, 'Алиса', { camera: false });
+    await expect(alice.page.locator('.tile')).toHaveCount(1);
+    const url = alice.page.url();
+
+    const bob = await newParticipant(browser);
+    await bob.page.goto(url);
+    await enterName(bob.page, 'Боб', { camera: false });
+    await expect(bob.page.locator('.tile')).toHaveCount(2);
+
+    // Алиса включает камеру уже в звонке.
+    await alice.page.getByRole('button', { name: 'Включить камеру' }).click();
+    await expect(alice.page.getByRole('button', { name: 'Выключить камеру' })).toBeVisible();
+
+    // Видео Алисы доходит до Боба и реально проигрывается (videoWidth > 0).
+    await expectVideoPlaying(bob.page.locator('.tile__video:not(.tile__video--self)').first());
+
+    await alice.context.close();
+    await bob.context.close();
+  });
+
   test('US-8: чат в реальном времени', async ({ browser }) => {
     const alice = await newParticipant(browser);
     const url = await createRoom(alice.page, 'Алиса');

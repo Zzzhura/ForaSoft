@@ -90,7 +90,7 @@ export class PeerConnectionManager {
 
     const pc = new RTCPeerConnection(this.rtcConfig);
     const { audioSender, videoSender } = this.#attachLocalMedia(pc);
-    const record = { pc, audioSender, videoSender, pendingCandidates: [] };
+    const record = { pc, audioSender, videoSender, pendingCandidates: [], remoteStream: null };
     this.peers.set(socketId, record);
 
     // Локальные ICE-кандидаты → удалённому участнику через relay сервера.
@@ -100,13 +100,24 @@ export class PeerConnectionManager {
       }
     };
 
-    // Удалённый поток → UI. ontrack может прийти на каждую дорожку, поток один
-    // и тот же (event.streams[0]); UI дедуплицирует по socketId.
+    // Удалённый поток → UI. Собираем СОБСТВЕННЫЙ поток участника и докладываем в
+    // него каждую входящую дорожку (`event.track`), а не полагаемся на
+    // `event.streams[0]` (msid): видеотрансивер, заведённый без дорожки (камера
+    // выключена на момент negotiation), может прийти БЕЗ msid — тогда позже
+    // включённая камера (replaceTrack без renegotiation) не попала бы в
+    // отображаемый поток и плитка осталась бы чёрной. Дорожка-приёмник приходит
+    // в ontrack уже на negotiation (sendrecv), кадры по ней начинают идти после
+    // replaceTrack — `<video>` с этим потоком их подхватывает.
     pc.ontrack = (event) => {
-      const [stream] = event.streams;
-      if (stream) {
-        this.onRemoteStream?.(socketId, stream);
+      const rec = this.peers.get(socketId);
+      if (!rec) return;
+      if (!rec.remoteStream) {
+        rec.remoteStream = new MediaStream();
       }
+      if (event.track && !rec.remoteStream.getTracks().includes(event.track)) {
+        rec.remoteStream.addTrack(event.track);
+      }
+      this.onRemoteStream?.(socketId, rec.remoteStream);
     };
 
     // Деградация без падения комнаты (задача 20, TDD §13): сбой ICE одной пары
@@ -278,15 +289,11 @@ export class PeerConnectionManager {
     const videoSender = videoTrack
       ? pc.addTrack(videoTrack, stream)
       : // Нет камеры сейчас (выключена по умолчанию) — заводим отправляющий
-        // трансивер «про запас». Привязываем его к тому же `stream`, что и аудио
-        // (`streams`), чтобы msid совпал: иначе при позднем включении камеры
-        // (replaceTrack без renegotiation) у удалённого участника видеодорожка не
-        // попадёт в отображаемый MediaStream (ontrack приходит с пустым
-        // event.streams) — будет чёрная плитка вместо видео.
-        pc.addTransceiver('video', {
-          direction: 'sendrecv',
-          streams: stream ? [stream] : [],
-        }).sender;
+        // sendrecv-трансивер «про запас», чтобы при включении камеры подменить
+        // дорожку через replaceTrack без renegotiation. Привязку входящей видео-
+        // дорожки к потоку участника на стороне приёма обеспечивает ontrack
+        // (собственный MediaStream), а не msid этого трансивера.
+        pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
 
     return { audioSender, videoSender };
   }

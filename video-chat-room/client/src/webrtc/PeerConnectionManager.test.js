@@ -81,6 +81,19 @@ class MockRTCPeerConnection {
   }
 }
 
+/** Минимальный мок `MediaStream` (в node/jsdom его нет): копит дорожки. */
+class MockMediaStream {
+  constructor(tracks = []) {
+    this._tracks = [...tracks];
+  }
+  getTracks() {
+    return this._tracks;
+  }
+  addTrack(track) {
+    this._tracks.push(track);
+  }
+}
+
 /** Фейковый локальный поток с настраиваемым набором дорожек. */
 function fakeLocalStream({ audio = true, video = true } = {}) {
   const tracks = [];
@@ -112,10 +125,12 @@ function makePCM(overrides = {}) {
 beforeEach(() => {
   MockRTCPeerConnection.instances = [];
   globalThis.RTCPeerConnection = MockRTCPeerConnection;
+  globalThis.MediaStream = MockMediaStream;
 });
 
 afterEach(() => {
   delete globalThis.RTCPeerConnection;
+  delete globalThis.MediaStream;
 });
 
 describe('правило initiator (анти-glare, 10.1, §7.1)', () => {
@@ -254,14 +269,23 @@ describe('буферизация ICE-кандидатов', () => {
 });
 
 describe('колбэки UI', () => {
-  test('ontrack пробрасывает удалённый поток (onRemoteStream)', () => {
+  test('ontrack собирает входящие дорожки в один поток участника (onRemoteStream)', () => {
     const { pcm, onRemoteStream } = makePCM();
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
 
-    const stream = { id: 'remote' };
-    pc.ontrack({ streams: [stream] });
-    expect(onRemoteStream).toHaveBeenCalledWith('b', stream);
+    // event.streams игнорируем (msid ненадёжен) — копим по event.track.
+    const audio = { kind: 'audio' };
+    const video = { kind: 'video' };
+    pc.ontrack({ track: audio, streams: [] });
+    pc.ontrack({ track: video, streams: [] });
+
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
+    // Оба ontrack отдают один и тот же объект потока (один на участника)...
+    const stream = onRemoteStream.mock.calls[1][1];
+    expect(onRemoteStream.mock.calls[0][1]).toBe(stream);
+    // ...и в нём собраны обе дорожки (видео, включённое позже, не «теряется»).
+    expect(stream.getTracks()).toEqual([audio, video]);
   });
 
   test('onconnectionstatechange сообщает failed (деградация, задача 20)', () => {
