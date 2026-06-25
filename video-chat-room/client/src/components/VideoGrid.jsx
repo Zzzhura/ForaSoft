@@ -17,12 +17,22 @@ import VideoTile from './VideoTile.jsx';
  * задача 15). Раскладка выбирается по числу плиток через модификатор класса.
  *
  * `onPlayBlocked`/`playToken` пробрасываются в плитки для autoplay-гейта
- * (PRD п. 37, US-13, задача 19).
+ * (PRD п. 37, US-13, задача 19). `outputDeviceId` — выбранное устройство вывода
+ * звука (применяется к плиткам через `setSinkId`).
  *
- * @param {{ tiles: Tile[], onPlayBlocked?: () => void, playToken?: number }} props
+ * `outputEnabled=false` глушит звук всех удалённых плиток (мьют вывода).
+ *
+ * @param {{ tiles: Tile[], onPlayBlocked?: () => void, playToken?: number,
+ *           outputDeviceId?: string | null, outputEnabled?: boolean }} props
  * @returns {JSX.Element}
  */
-export default function VideoGrid({ tiles, onPlayBlocked, playToken = 0 }) {
+export default function VideoGrid({
+  tiles,
+  onPlayBlocked,
+  playToken = 0,
+  outputDeviceId = null,
+  outputEnabled = true,
+}) {
   // Лимит комнаты — 4 (mesh), сетка не строит больше 2×2 (PRD F-05/F-07).
   const count = Math.min(tiles.length, 4);
 
@@ -39,6 +49,8 @@ export default function VideoGrid({ tiles, onPlayBlocked, playToken = 0 }) {
           connectionFailed={tile.connectionFailed}
           onPlayBlocked={onPlayBlocked}
           playToken={playToken}
+          outputDeviceId={outputDeviceId}
+          outputEnabled={outputEnabled}
         />
       ))}
     </div>

@@ -45,3 +45,14 @@ export function sanitizeNameInput(raw) {
 export function normalizeName(raw) {
   return sanitizeNameInput(raw).trim();
 }
+
+/**
+ * Генерирует гостевое имя вида «Гость-1234», когда пользователь не ввёл своё
+ * (ввод имени опционален). Дефис допустим — не входит в `FORBIDDEN_NAME_CHARS`,
+ * поэтому имя проходит и клиентскую, и серверную валидацию.
+ *
+ * @returns {string}
+ */
+export function generateGuestName() {
+  return `Гость-${Math.floor(1000 + Math.random() * 9000)}`;
+}

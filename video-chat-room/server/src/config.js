@@ -31,10 +31,14 @@ const loadTls = () => {
  * Единая конфигурация сервера из env (TDD §12).
  * Значения по умолчанию совпадают с дефолтами из плана задач (impl §1.3).
  */
+const tls = loadTls();
+
 export const config = {
   port: toInt(process.env.PORT, 3001),
-  // Origin Vite dev-сервера для CORS. В проде SPA отдаётся с того же origin (§12).
-  clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
+  // Origin Vite dev-сервера для CORS. Протокол по умолчанию совпадает с наличием
+  // сертификата: с ним Vite поднимается по HTTPS (тот же cert), поэтому origin —
+  // https. В проде SPA отдаётся с того же origin (§12).
+  clientOrigin: process.env.CLIENT_ORIGIN || `${tls ? 'https' : 'http'}://localhost:5173`,
   // Лимит участников в комнате — жёстко 4 из-за mesh-топологии (PRD F-05).
   maxMembers: toInt(process.env.MAX_MEMBERS, 4),
   // Кольцевой буфер истории чата на комнату (TDD §9).
@@ -47,5 +51,5 @@ export const config = {
     .map((url) => url.trim())
     .filter(Boolean),
   // TLS-сертификат (или null → HTTP-фоллбэк). См. loadTls().
-  tls: loadTls(),
+  tls,
 };

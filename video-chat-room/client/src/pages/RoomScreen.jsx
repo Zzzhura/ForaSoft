@@ -4,62 +4,43 @@ import EntryScreen from '../components/EntryScreen.jsx';
 import VideoGrid from '../components/VideoGrid.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
 import Controls from '../components/Controls.jsx';
+import MediaPreview from '../components/MediaPreview.jsx';
 import NoticeScreen from '../components/NoticeScreen.jsx';
 import { useToast } from '../components/Toast.jsx';
+import { generateGuestName } from '../lib/name.js';
 import { useLocalMedia } from '../webrtc/useLocalMedia.js';
 import { useSignaling } from '../socket/useSignaling.js';
 import { PeerConnectionManager } from '../webrtc/PeerConnectionManager.js';
 
 /**
- * Экран комнаты. Имя приходит из `StartScreen` через router state; при прямом
- * открытии ссылки state пуст — спрашиваем имя (PRD F-04, US-4). Перезагрузка
- * теряет state → повторный ввод имени = «новый вход» (PRD п. 28).
+ * Экран комнаты (задача 18, TDD §4.5/§7.1): захват локального медиа, сигналинг и
+ * mesh из `PeerConnectionManager`, реакция на состав комнаты и рендер сетки + чат
+ * + контролы.
  *
- * Гейт имени держится отдельно от оркестрации, чтобы хуки звонка (`RoomCall`)
- * вызывались безусловно (правила хуков).
+ * Двухшаговый вход: имя приходит из `StartScreen` через router state либо
+ * запрашивается формой (PRD F-04, US-4; перезагрузка теряет state → повторный
+ * ввод = «новый вход», PRD п. 28). Локальное медиа (`useLocalMedia`) захватывается
+ * сразу при открытии комнаты — нативный prompt на входе; камера и микрофон
+ * выключены по умолчанию. Управление устройствами вынесено прямо в форму ввода
+ * имени (`DeviceToggles`), чтобы участник выбрал состояние медиа до входа. Вход в
+ * комнату (`joinRoom`/PCM) происходит после ввода имени, когда есть связь и захват
+ * завершён — тот же поток несётся в звонок без повторного запроса доступа.
+ *
+ * Жест входа обычно снимает autoplay-блокировку, так что удалённое аудио/видео
+ * воспроизводится (PRD п. 37, US-13); иначе показывается баннер «Включить звук».
  *
  * @returns {JSX.Element}
  */
 export default function RoomScreen() {
   const { roomId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+
   const [name, setName] = useState(location.state?.name ?? null);
   // Название комнаты от создателя (router state). У входящих по ссылке его нет —
   // тогда название придёт с сервера в `room:joined` (источник истины).
   const initialRoomTitle = location.state?.roomTitle ?? '';
-
-  if (!name) {
-    return (
-      <EntryScreen
-        title="Видеочат-комната"
-        byline="от Fora Soft"
-        caption="Введите имя, чтобы присоединиться к звонку."
-        placeholder="Введите ваше имя"
-        submitLabel="Войти"
-        onSubmit={setName}
-      />
-    );
-  }
-
-  return <RoomCall roomId={roomId} name={name} initialRoomTitle={initialRoomTitle} />;
-}
-
-/**
- * Оркестрация звонка (задача 18, TDD §4.5/§7.1): собирает локальное медиа,
- * сигналинг и mesh из `PeerConnectionManager`, реагирует на состав комнаты
- * (`room:peer-joined/left`) и рендерит сетку + чат + участников + контролы.
- *
- * Жест входа (клик «Создать комнату»/«Войти») обычно снимает autoplay-блокировку,
- * так что удалённое аудио/видео воспроизводится (PRD п. 37, US-13). Если браузер
- * всё же блокирует автозапуск, плитки сообщают об этом и показывается баннер
- * «Включить звук» (задача 19). Экраны ошибок окружения — `NoticeScreen`.
- *
- * @param {{ roomId: string, name: string, initialRoomTitle?: string }} props
- * @returns {JSX.Element}
- */
-function RoomCall({ roomId, name, initialRoomTitle = '' }) {
-  const navigate = useNavigate();
-  const { showToast } = useToast();
 
   const pcmRef = useRef(null);
   const joinedRef = useRef(false);
@@ -104,11 +85,23 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
     hasCam,
     ready,
     error: mediaError,
+    audioDevices,
+    videoDevices,
+    outputDevices,
+    currentAudioId,
+    currentVideoId,
+    currentOutputId,
+    outputEnabled,
     toggleAudio,
     toggleVideo,
+    selectAudioDevice,
+    selectVideoDevice,
+    selectOutputDevice,
+    toggleOutput,
   } = useLocalMedia({
-    // Тумблер камеры (задача 12) меняет локальную дорожку → пробрасываем в mesh.
+    // Тумблер камеры/смена устройства меняют локальную дорожку → пробрасываем в mesh.
     onVideoTrackChanged: (track) => pcmRef.current?.replaceVideoTrack(track),
+    onAudioTrackChanged: (track) => pcmRef.current?.replaceAudioTrack(track),
   });
   localStreamRef.current = localStream;
 
@@ -119,6 +112,7 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
       mediaToastRef.current = true;
       showToast({
         type: 'warning',
+        icon: 'no-device',
         text: 'Доступ к камере и микрофону отклонён. Вы можете войти без них.',
       });
     }
@@ -203,16 +197,17 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
 
   const { connected, serverError } = signaling;
 
-  // Входим в комнату один раз — когда есть связь и попытка захвата медиа
-  // завершена (даже при отказе в устройствах входим без них, US-12).
+  // Входим в комнату один раз — после ввода имени, когда есть связь и попытка
+  // захвата медиа завершена (даже при отказе в устройствах входим без них, US-12).
+  // До ввода имени участник остаётся в форме входа с предпросмотром устройств.
   useEffect(() => {
-    if (connected && ready && !joinedRef.current) {
+    if (name && connected && ready && !joinedRef.current) {
       joinedRef.current = true;
       // Название шлёт только создатель (есть в router state); сервер игнорирует
       // его для уже существующей комнаты — название остаётся за создателем.
       signalingRef.current.joinRoom(roomId, name, initialRoomTitle);
     }
-  }, [connected, ready, roomId, name, initialRoomTitle]);
+  }, [name, connected, ready, roomId, initialRoomTitle]);
 
   // Транслируем своё состояние медиа остальным: первый раз — после входа (когда
   // известен selfId), затем при каждом переключении микрофона/камеры. У остальных
@@ -262,11 +257,37 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
   const handleCopyLink = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
-      showToast({ type: 'success', text: 'Ссылка-приглашение скопирована' });
+      showToast({ type: 'success', icon: 'copy', text: 'Ссылка-приглашение скопирована' });
     } catch {
       showToast({ type: 'warning', text: 'Не удалось скопировать ссылку' });
     }
   }, [showToast]);
+
+  // Тумблеры микрофона/камеры с проверкой доступа: если устройство недоступно
+  // (нет разрешения/устройства) — тост на каждый клик, тумблер не дёргаем.
+  const handleToggleAudio = useCallback(() => {
+    if (!hasMic) {
+      showToast({
+        type: 'warning',
+        icon: 'no-device',
+        text: 'Нет доступа к микрофону. Разрешите доступ в настройках браузера.',
+      });
+      return;
+    }
+    toggleAudio();
+  }, [hasMic, toggleAudio, showToast]);
+
+  const handleToggleVideo = useCallback(() => {
+    if (!hasCam) {
+      showToast({
+        type: 'warning',
+        icon: 'no-device',
+        text: 'Нет доступа к камере. Разрешите доступ в настройках браузера.',
+      });
+      return;
+    }
+    toggleVideo();
+  }, [hasCam, toggleVideo, showToast]);
 
   // Плитка сообщила, что автозапуск заблокирован — поднимаем баннер-жест.
   const handlePlayBlocked = useCallback(() => setAudioBlocked(true), []);
@@ -277,6 +298,32 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
     setAudioBlocked(false);
     setPlayToken((token) => token + 1);
   };
+
+  // Форма входа: превью-плитка участника с кнопками устройств (микрофон/камера
+  // выключены по умолчанию) над полем ввода имени. Тот же `useLocalMedia`, что и у
+  // звонка, — доступ не запрашивается повторно после ввода имени.
+  if (!name) {
+    return (
+      <EntryScreen
+        title="Подключение к комнате"
+        byline="Настройте камеру и микрофон перед входом"
+        caption=""
+        placeholder="Введите ваше имя (необязательно)"
+        submitLabel="Войти"
+        optionalName
+        onSubmit={(submitted) => setName(submitted || generateGuestName())}
+        mediaPreview={
+          <MediaPreview
+            localStream={localStream}
+            audioEnabled={audioEnabled}
+            videoEnabled={videoEnabled}
+            onToggleAudio={handleToggleAudio}
+            onToggleVideo={handleToggleVideo}
+          />
+        }
+      />
+    );
+  }
 
   if (serverError) {
     return (
@@ -297,6 +344,17 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
         actionLabel="Повторить вход"
         onAction={() => window.location.reload()}
       />
+    );
+  }
+
+  // Пока сервер не подтвердил вход (`room:joined` → `selfId`), комнату не
+  // показываем: иначе при попытке войти в полную комнату на долю секунды мелькает
+  // «пустая» комната с одной своей плиткой до прихода `room:full`. Отклонённый
+  // вход `selfId` не получает, поэтому проверки `roomFull`/`serverError` выше
+  // перехватывают терминальные состояния раньше этого гейта.
+  if (!selfId) {
+    return (
+      <NoticeScreen title="Подключение к комнате" text="Устанавливаем соединение…" />
     );
   }
 
@@ -372,7 +430,13 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
                 Включить звук
               </button>
             )}
-            <VideoGrid tiles={tiles} onPlayBlocked={handlePlayBlocked} playToken={playToken} />
+            <VideoGrid
+              tiles={tiles}
+              onPlayBlocked={handlePlayBlocked}
+              playToken={playToken}
+              outputDeviceId={currentOutputId}
+              outputEnabled={outputEnabled}
+            />
           </main>
           {/* Мета-строка над панелью: слева — название комнаты, справа — число участников. */}
           <div className="room__meta">
@@ -386,11 +450,20 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
         <Controls
           audioEnabled={audioEnabled}
           videoEnabled={videoEnabled}
-          hasMic={hasMic}
-          hasCam={hasCam}
           chatOpen={chatOpen}
-          onToggleAudio={toggleAudio}
-          onToggleVideo={toggleVideo}
+          audioDevices={audioDevices}
+          videoDevices={videoDevices}
+          outputDevices={outputDevices}
+          currentAudioId={currentAudioId}
+          currentVideoId={currentVideoId}
+          currentOutputId={currentOutputId}
+          outputEnabled={outputEnabled}
+          onToggleAudio={handleToggleAudio}
+          onToggleVideo={handleToggleVideo}
+          onToggleOutput={toggleOutput}
+          onSelectAudioDevice={selectAudioDevice}
+          onSelectVideoDevice={selectVideoDevice}
+          onSelectOutputDevice={selectOutputDevice}
           onToggleChat={() => setChatOpen((open) => !open)}
           onCopyLink={handleCopyLink}
           onLeave={handleLeave}

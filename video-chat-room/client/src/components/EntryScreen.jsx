@@ -8,7 +8,11 @@ import { NAME_MAX_LEN, sanitizeNameInput, normalizeName } from '../lib/name.js';
  * @property {string} caption - пояснительный текст под карточкой.
  * @property {string} placeholder - плейсхолдер поля имени.
  * @property {string} submitLabel - текст кнопки отправки.
- * @property {(name: string) => void} onSubmit - вызывается с нормализованным именем.
+ * @property {(name: string) => void} onSubmit - вызывается с нормализованным именем
+ *           (при `optionalName` может прийти пустая строка — имя необязательно).
+ * @property {boolean} [optionalName] - ввод имени необязателен (пустое разрешено).
+ * @property {React.ReactNode} [mediaPreview] - превью-плитка с видео участника и
+ *           кнопками устройств; показывается над формой при входе в комнату.
  */
 
 /**
@@ -27,10 +31,15 @@ export default function EntryScreen({
   placeholder,
   submitLabel,
   onSubmit,
+  optionalName = false,
+  mediaPreview = null,
 }) {
   const [name, setName] = useState('');
 
-  const isValid = normalizeName(name).length > 0;
+  // При необязательном имени форма валидна всегда (пустое допустимо).
+  const isValid = optionalName || normalizeName(name).length > 0;
+  // Вариант формы входа в комнату (с превью): шире, без фона/тени у карточки.
+  const withPreview = Boolean(mediaPreview);
 
   // Спецсимволы и переполнение не попадают в поле — фильтруем на вводе (PRD п. 38).
   const handleChange = (event) => setName(sanitizeNameInput(event.target.value));
@@ -38,30 +47,38 @@ export default function EntryScreen({
   const handleSubmit = (event) => {
     event.preventDefault();
     const cleanName = normalizeName(name);
-    if (cleanName.length === 0) {
+    // Обязательное имя: пустое не отправляем. Необязательное: пустую строку
+    // отдаём наверх — там подставится гостевое имя.
+    if (!optionalName && cleanName.length === 0) {
       return;
     }
     onSubmit(cleanName);
   };
 
   return (
-    <main className="start">
+    <main className={`start${withPreview ? ' start--join' : ''}`}>
       <div className="start__col">
         <div className="start__hero">
-          <img
-            className="start__logo"
-            src="/forasoft-logo.svg"
-            alt="Fora Soft"
-            width="48"
-            height="48"
-          />
+          {/* На форме подключения (с превью) логотип не показываем. */}
+          {!withPreview && (
+            <img
+              className="start__logo"
+              src="/forasoft-logo.svg"
+              alt="Fora Soft"
+              width="48"
+              height="48"
+            />
+          )}
           <div className="start__heading">
             <h1 className="start__title">{title}</h1>
             <p className="start__byline">{byline}</p>
           </div>
         </div>
 
-        <section className="card start__card">
+        {/* Превью участника с кнопками устройств — над формой (вход в комнату). */}
+        {mediaPreview}
+
+        <section className={`card start__card${withPreview ? ' start__card--bare' : ''}`}>
           <form className="start-form" onSubmit={handleSubmit} noValidate>
             <label className="visually-hidden" htmlFor="name">
               Ваше имя
@@ -101,7 +118,7 @@ export default function EntryScreen({
           </form>
         </section>
 
-        <p className="start__caption">{caption}</p>
+        {caption && <p className="start__caption">{caption}</p>}
       </div>
 
       <footer className="start__footer">

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useSpeaking } from '../webrtc/useSpeaking.js';
 
 /**
  * @typedef {object} VideoTileProps
@@ -10,6 +11,8 @@ import { useEffect, useRef } from 'react';
  * @property {() => void} [onPlayBlocked] - вызывается, когда браузер заблокировал автозапуск (PRD п. 37, US-13).
  * @property {number} [playToken] - смена значения повторяет play() (жест «Включить звук», задача 19).
  * @property {boolean} [connectionFailed] - P2P не установлено (строгий NAT / STUN) → индикатор, участник остаётся (задача 20, PRD п. 34).
+ * @property {string | null} [outputDeviceId] - устройство вывода звука (применяется через `setSinkId`).
+ * @property {boolean} [outputEnabled] - false → звук плитки заглушён (мьют вывода).
  */
 
 /**
@@ -31,8 +34,14 @@ export default function VideoTile({
   onPlayBlocked,
   playToken = 0,
   connectionFailed = false,
+  outputDeviceId = null,
+  outputEnabled = true,
 }) {
   const videoRef = useRef(null);
+
+  // Звуковая индикация (рамка на плитке говорящего): анализируем поток только
+  // при включённом микрофоне — у выключенного нет смысла и нет звука.
+  const speaking = useSpeaking(stream, audioEnabled);
 
   // srcObject нельзя задать атрибутом — присваиваем императивно (TDD §4.3).
   // Дополнительно явно запускаем play(): для удалённой плитки (со звуком)
@@ -55,8 +64,24 @@ export default function VideoTile({
     }
   }, [stream, isSelf, onPlayBlocked, playToken]);
 
+  // Маршрутизация звука на выбранное устройство вывода (динамики). setSinkId есть
+  // не во всех браузерах — при отсутствии просто пропускаем. Self-view заглушён,
+  // ему вывод не нужен, но вызов безвреден.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !outputDeviceId || typeof el.setSinkId !== 'function') return;
+    el.setSinkId(outputDeviceId).catch((err) => console.error('[pcm] setSinkId failed:', err));
+  }, [outputDeviceId, stream]);
+
+  // Мьют вывода: self-view всегда заглушён (анти-эхо), удалённые — при выключенном
+  // выводе звука. `muted` задаём императивно — React не всегда отражает атрибут.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el) el.muted = isSelf || !outputEnabled;
+  }, [isSelf, outputEnabled, stream]);
+
   return (
-    <div className="tile">
+    <div className={`tile${speaking ? ' tile--speaking' : ''}`}>
       <video
         ref={videoRef}
         className={`tile__video${isSelf ? ' tile__video--self' : ''}`}

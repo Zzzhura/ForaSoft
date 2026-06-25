@@ -146,6 +146,20 @@ body {
   padding: 1.5rem;
 }
 
+/* Форма входа в комнату (с превью): колонка под ширину плитки (~500px). */
+.start--join .start__col {
+  max-width: 500px;
+}
+
+/* Карточка ввода имени на форме с превью — без фона, рамки и тени; поле и кнопка
+   тянутся на всю ширину (= ширине превью). */
+.start__card--bare {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
 .start__caption {
   max-width: 20rem;
   margin: 0;
@@ -222,6 +236,7 @@ body {
 }
 
 .field--with-icon {
+  border: 1px solid rgb(58, 63, 66, 1);
   padding-left: 2.5rem;
 }
 
@@ -336,6 +351,17 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+/* Звуковая индикация: рамка на плитке участника, который сейчас говорит. */
+.tile--speaking {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 14px var(--accent-ring);
 }
 
 .tile__video {
@@ -650,6 +676,113 @@ body {
   padding: 0.75rem;
 }
 
+/* Группа «тумблер устройства + меню выбора» (микрофон/камера). */
+.ctrl-group {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Меню выбора устройства ввода. */
+.device-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.device-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.device-menu__trigger:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+/* Стрелка: поворот на 180° при открытом меню. */
+.device-menu__chevron {
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.device-menu__chevron--open {
+  transform: rotate(180deg);
+}
+
+/* Список устройств — всплывает над панелью. */
+.device-menu__list {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  min-width: 220px;
+  max-width: 300px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.device-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.device-menu__item:hover {
+  background: var(--surface-2);
+}
+
+.device-menu__item--selected {
+  color: var(--text-strong);
+}
+
+.device-menu__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.device-menu__dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+
+.device-menu__item--selected .device-menu__dot {
+  background: var(--accent);
+}
+
 .ctrl-btn {
   display: inline-flex;
   align-items: center;
@@ -894,20 +1027,25 @@ body {
 
 /*
  * Тосты-уведомления (правый верхний угол): подтверждение копирования ссылки
- * (PRD F-03) и отказ в доступе к устройствам (PRD п. 33, US-12).
+ * (PRD F-03) и отказ в доступе к устройствам (PRD п. 33, US-12). Складываются
+ * стопкой друг на друга — каждый тост позиционируется абсолютно, новый сверху,
+ * предыдущие сдвинуты вниз и уменьшены (выглядывают позади).
  */
 .toasts {
   position: fixed;
   top: 1rem;
   right: 1rem;
   z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-width: 360px;
+  width: 360px;
+  max-width: calc(100vw - 2rem);
 }
 
 .toast {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 100%;
+  transform-origin: top right;
   display: flex;
   align-items: center;
   gap: 0.625rem;
@@ -917,6 +1055,9 @@ body {
   border-left-width: 3px;
   border-radius: var(--radius);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 0.2s ease,
+    opacity 0.2s ease;
 }
 
 .toast--success {
@@ -927,7 +1068,84 @@ body {
   border-left-color: var(--warning);
 }
 
+/* Иконка тоста: цвет по типу (успех — зелёный, предупреждение — янтарный). */
+.toast__icon {
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.toast--success .toast__icon {
+  color: var(--success);
+}
+
+.toast--warning .toast__icon {
+  color: var(--warning);
+}
+
 .toast__text {
   font-size: 0.875rem;
   color: var(--text);
+}
+
+/*
+ * Превью-плитка участника на экране входа (над формой): собственное видео с
+ * кнопками устройств внутри. Камера и микрофон выключены по умолчанию.
+ */
+.preview {
+  position: relative;
+  width: 100%;
+  /* Плитка ~500×300 (ширину задаёт колонка .start--join, 5/3 даёт высоту 300). */
+  aspect-ratio: 5 / 3;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.preview__video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+  display: block;
+}
+
+/* При выключенной камере чёрный прямоугольник видео скрываем фоном плитки. */
+.preview--no-video .preview__video {
+  background: transparent;
+}
+
+.preview__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.preview__bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.875rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent);
+}
+
+.device-toggles {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+/* Кнопки на превью — меньше и круглые. */
+.device-toggles .ctrl-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
 }

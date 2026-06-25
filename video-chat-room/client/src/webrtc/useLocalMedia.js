@@ -4,8 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * Хук локальных медиаустройств (TDD §4.4, §7.3, §8; PRD F-06/F-09/F-10,
  * п. 13/14/16/18/19/20/33, US-6/US-7/US-12).
  *
- * Запрашивает камеру и микрофон через `getUserMedia` при монтировании и держит
- * состояние устройств. Камера и микрофон включены по умолчанию (п. 13). Если
+ * Запрашивает камеру и микрофон через `getUserMedia` при монтировании (нативный
+ * prompt на каждом входе) и держит состояние устройств. Камера и микрофон
+ * ВЫКЛЮЧЕНЫ по умолчанию у каждого нового участника: микрофон глушим
+ * (`enabled=false`), видеодорожку сразу освобождаем (`stop()`+`removeTrack`,
+ * лампочка не горит). Доступ запрашиваем только чтобы показать prompt и узнать
+ * наличие устройств — включает их пользователь тумблерами. Если
  * устройства физически нет или в доступе отказано — пользователь всё равно
  * остаётся в комнате с выключенными устройствами (п. 14/33, US-12), приложение
  * не «вылетает».
@@ -28,9 +32,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * @typedef {'denied'|'notfound'|'unsupported'} MediaError
  *
- * @param {{ onVideoTrackChanged?: (track: MediaStreamTrack | null) => void }} [options]
- *        `onVideoTrackChanged` вызывается при появлении/снятии локальной
- *        видеодорожки (тумблер камеры, потеря устройства) — для проброса в mesh.
+ * Выбор устройства ввода (`selectAudioDevice`/`selectVideoDevice`): заново
+ * захватывает дорожку с нужным `deviceId` и подменяет её в потоке и на peer
+ * через `replaceTrack` (колбэки `onAudioTrackChanged`/`onVideoTrackChanged`).
+ * Списки устройств (`audioDevices`/`videoDevices`) перечисляются после выдачи
+ * доступа и обновляются по событию `devicechange`.
+ *
+ * @typedef {{ deviceId: string, label: string }} MediaDevice
+ *
+ * @param {{
+ *   onVideoTrackChanged?: (track: MediaStreamTrack | null) => void,
+ *   onAudioTrackChanged?: (track: MediaStreamTrack | null) => void,
+ * }} [options]
+ *        Колбэки вызываются при появлении/снятии/замене локальной дорожки
+ *        (тумблеры, потеря устройства, смена устройства ввода) — для проброса в mesh.
  * @returns {{
  *   localStream: MediaStream | null,
  *   audioEnabled: boolean,
@@ -39,13 +54,25 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *   hasCam: boolean,
  *   ready: boolean,
  *   error: MediaError | null,
+ *   audioDevices: MediaDevice[],
+ *   videoDevices: MediaDevice[],
+ *   outputDevices: MediaDevice[],
+ *   currentAudioId: string | null,
+ *   currentVideoId: string | null,
+ *   currentOutputId: string | null,
+ *   outputEnabled: boolean,
  *   toggleAudio: () => void,
  *   toggleVideo: () => Promise<void>,
+ *   selectAudioDevice: (deviceId: string) => Promise<void>,
+ *   selectVideoDevice: (deviceId: string) => Promise<void>,
+ *   selectOutputDevice: (deviceId: string) => void,
+ *   toggleOutput: () => void,
  * }}
  */
-export function useLocalMedia({ onVideoTrackChanged } = {}) {
+export function useLocalMedia({ onVideoTrackChanged, onAudioTrackChanged } = {}) {
   const [localStream, setLocalStream] = useState(null);
-  // Включены по умолчанию при наличии устройства (п. 13); false, если устройства нет.
+  // Выключены по умолчанию у каждого нового участника, даже с тем же устройством:
+  // включает пользователь тумблерами.
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [videoEnabled, setVideoEnabled] = useState(false);
   const [hasMic, setHasMic] = useState(false);
@@ -55,6 +82,20 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
   const [ready, setReady] = useState(false);
   /** @type {[MediaError|null, Function]} */
   const [error, setError] = useState(null);
+  /** @type {[MediaDevice[], Function]} Доступные микрофоны (audioinput). */
+  const [audioDevices, setAudioDevices] = useState([]);
+  /** @type {[MediaDevice[], Function]} Доступные камеры (videoinput). */
+  const [videoDevices, setVideoDevices] = useState([]);
+  /** @type {[MediaDevice[], Function]} Доступные устройства вывода звука (audiooutput). */
+  const [outputDevices, setOutputDevices] = useState([]);
+  // deviceId активной дорожки — отмечаем выбранный пункт в меню.
+  const [currentAudioId, setCurrentAudioId] = useState(null);
+  const [currentVideoId, setCurrentVideoId] = useState(null);
+  // Выбранное устройство вывода звука (применяется к плиткам через setSinkId).
+  const [currentOutputId, setCurrentOutputId] = useState(null);
+  // Вывод звука включён (по умолчанию). Выключение глушит звук всех удалённых
+  // плиток (мьют воспроизведения, через `muted` у <video>).
+  const [outputEnabled, setOutputEnabled] = useState(true);
 
   // Императивный доступ к текущему потоку из тумблеров/onended без пересоздания
   // колбэков. Поток мутируется (add/removeTrack) — ссылка остаётся стабильной.
@@ -63,8 +104,14 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
   // но не должен пересоздавать тумблеры или перезапускать эффект захвата.
   const onVideoTrackChangedRef = useRef(onVideoTrackChanged);
   onVideoTrackChangedRef.current = onVideoTrackChanged;
+  const onAudioTrackChangedRef = useRef(onAudioTrackChanged);
+  onAudioTrackChangedRef.current = onAudioTrackChanged;
   // Защита от перекрытия асинхронных переключений камеры (быстрые клики).
   const videoBusyRef = useRef(false);
+  // Предпочтённые устройства: при включении камеры/смене микрофона захватываем
+  // именно их (а не «дефолт»). Держим в ref — не должны пересоздавать тумблеры.
+  const preferredAudioIdRef = useRef(null);
+  const preferredVideoIdRef = useRef(null);
 
   // Потеря микрофона во время звонка (п. 20, US-7): дорожку не пересоздаём,
   // помечаем устройство отсутствующим и выключенным.
@@ -104,16 +151,36 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
         stream = result.stream;
         const audioTrack = stream.getAudioTracks()[0] ?? null;
         const videoTrack = stream.getVideoTracks()[0] ?? null;
-        // Реакция на потерю устройства во время звонка (п. 20, US-7).
-        if (audioTrack) audioTrack.onended = handleAudioEnded;
-        if (videoTrack) videoTrack.onended = () => handleVideoEnded(videoTrack);
+        // Микрофон выключен по умолчанию: дорожку держим (для мгновенного unmute
+        // без renegotiation), но глушим. Реакция на потерю устройства — onended.
+        if (audioTrack) {
+          audioTrack.enabled = false;
+          audioTrack.onended = handleAudioEnded;
+        }
+        // Запоминаем выбранные устройства (для меню и повторного захвата) до того,
+        // как отпустим видеодорожку.
+        const audioId = trackDeviceId(audioTrack);
+        const videoId = trackDeviceId(videoTrack);
+        preferredAudioIdRef.current = audioId;
+        preferredVideoIdRef.current = videoId;
+        setCurrentAudioId(audioId);
+        setCurrentVideoId(videoId);
+        // Камера выключена по умолчанию: физически отпускаем устройство, чтобы
+        // лампочка не горела (stop + removeTrack). При включении тумблером
+        // дорожка захватывается заново через getUserMedia (toggleVideo).
+        if (videoTrack) {
+          videoTrack.stop();
+          stream.removeTrack(videoTrack);
+        }
         localStreamRef.current = stream;
         setLocalStream(stream);
         setHasMic(!!audioTrack);
         setHasCam(!!videoTrack);
-        setAudioEnabled(!!audioTrack);
-        setVideoEnabled(!!videoTrack);
+        setAudioEnabled(false);
+        setVideoEnabled(false);
       }
+      // Перечисляем устройства: метки доступны только после выдачи доступа.
+      refreshDevices(setAudioDevices, setVideoDevices, setOutputDevices);
       // error может прийти вместе с null-потоком (denied/notfound/unsupported)
       // либо отсутствовать при успешном частичном захвате.
       setError(result.error ?? null);
@@ -171,8 +238,11 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
         return;
       }
 
-      // Включаем: пересоздаём видеодорожку (getUserMedia заново — п. 19).
-      const fresh = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Включаем: пересоздаём видеодорожку (getUserMedia заново — п. 19),
+      // предпочитая ранее выбранную камеру.
+      const fresh = await navigator.mediaDevices.getUserMedia({
+        video: videoConstraint(preferredVideoIdRef.current),
+      });
       const track = fresh.getVideoTracks()[0] ?? null;
       const liveStream = localStreamRef.current;
       // Пока ждали getUserMedia, могли размонтироваться — освобождаем дорожку.
@@ -183,6 +253,9 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
       track.onended = () => handleVideoEnded(track);
       liveStream.addTrack(track);
       onVideoTrackChangedRef.current?.(track);
+      const id = trackDeviceId(track) ?? preferredVideoIdRef.current;
+      preferredVideoIdRef.current = id;
+      setCurrentVideoId(id);
       setVideoEnabled(true);
       setHasCam(true);
     } catch (err) {
@@ -193,6 +266,121 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
     }
   }, [handleVideoEnded]);
 
+  /**
+   * Выбор микрофона (смена устройства ввода): захватывает новую аудиодорожку с
+   * заданным `deviceId`, сохраняет текущее состояние mute (`enabled`), подменяет
+   * её в потоке и на всех peer (`onAudioTrackChanged`). No-op, если микрофона нет.
+   * @param {string} deviceId
+   * @returns {Promise<void>}
+   */
+  const selectAudioDevice = useCallback(
+    async (deviceId) => {
+      const liveStream = localStreamRef.current;
+      if (!liveStream || deviceId === preferredAudioIdRef.current) return;
+      try {
+        const fresh = await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: deviceId } },
+        });
+        const track = fresh.getAudioTracks()[0] ?? null;
+        const stream = localStreamRef.current;
+        if (!track || !stream) {
+          track?.stop();
+          return;
+        }
+        const old = stream.getAudioTracks()[0] ?? null;
+        // Переносим текущее состояние mute на новую дорожку.
+        track.enabled = old ? old.enabled : false;
+        track.onended = handleAudioEnded;
+        if (old) {
+          old.onended = null;
+          old.stop();
+          stream.removeTrack(old);
+        }
+        stream.addTrack(track);
+        onAudioTrackChangedRef.current?.(track);
+        const id = trackDeviceId(track) ?? deviceId;
+        preferredAudioIdRef.current = id;
+        setCurrentAudioId(id);
+        setHasMic(true);
+      } catch (err) {
+        console.error('[pcm] selectAudioDevice failed:', err);
+      }
+    },
+    [handleAudioEnded],
+  );
+
+  /**
+   * Выбор камеры (смена устройства ввода). Запоминает предпочтение; если камера
+   * сейчас включена — заменяет дорожку немедленно (`onVideoTrackChanged`), иначе
+   * устройство применится при следующем включении камеры. No-op при занятом
+   * переключении камеры.
+   * @param {string} deviceId
+   * @returns {Promise<void>}
+   */
+  const selectVideoDevice = useCallback(
+    async (deviceId) => {
+      if (deviceId === preferredVideoIdRef.current && videoEnabled) return;
+      preferredVideoIdRef.current = deviceId;
+      setCurrentVideoId(deviceId);
+      // Камера выключена — применим выбор при следующем включении.
+      if (!videoEnabled || videoBusyRef.current) return;
+      videoBusyRef.current = true;
+      try {
+        const fresh = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: deviceId } },
+        });
+        const track = fresh.getVideoTracks()[0] ?? null;
+        const stream = localStreamRef.current;
+        if (!track || !stream) {
+          track?.stop();
+          return;
+        }
+        const old = stream.getVideoTracks()[0] ?? null;
+        if (old) {
+          old.onended = null;
+          old.stop();
+          stream.removeTrack(old);
+        }
+        track.onended = () => handleVideoEnded(track);
+        stream.addTrack(track);
+        onVideoTrackChangedRef.current?.(track);
+        const id = trackDeviceId(track) ?? deviceId;
+        preferredVideoIdRef.current = id;
+        setCurrentVideoId(id);
+      } catch (err) {
+        console.error('[pcm] selectVideoDevice failed:', err);
+      } finally {
+        videoBusyRef.current = false;
+      }
+    },
+    [videoEnabled, handleVideoEnded],
+  );
+
+  // Обновление списков при подключении/отключении устройств (PRD п. 20).
+  useEffect(() => {
+    const md = navigator.mediaDevices;
+    if (!md?.addEventListener) return undefined;
+    const handler = () => refreshDevices(setAudioDevices, setVideoDevices, setOutputDevices);
+    md.addEventListener('devicechange', handler);
+    return () => md.removeEventListener('devicechange', handler);
+  }, []);
+
+  // По умолчанию — первое устройство вывода (обычно «default»), пока пользователь
+  // не выбрал другое. Не затираем уже выбранное.
+  useEffect(() => {
+    setCurrentOutputId((prev) => prev ?? outputDevices[0]?.deviceId ?? null);
+  }, [outputDevices]);
+
+  /**
+   * Выбор устройства вывода звука. Само переключение применяется к плиткам через
+   * `HTMLMediaElement.setSinkId` (в `VideoTile`) — здесь только запоминаем выбор.
+   * @param {string} deviceId
+   */
+  const selectOutputDevice = useCallback((deviceId) => setCurrentOutputId(deviceId), []);
+
+  /** Тумблер вывода звука: глушит/возобновляет звук удалённых плиток. */
+  const toggleOutput = useCallback(() => setOutputEnabled((v) => !v), []);
+
   return {
     localStream,
     audioEnabled,
@@ -201,9 +389,62 @@ export function useLocalMedia({ onVideoTrackChanged } = {}) {
     hasCam,
     ready,
     error,
+    audioDevices,
+    videoDevices,
+    outputDevices,
+    currentAudioId,
+    currentVideoId,
+    currentOutputId,
+    outputEnabled,
     toggleAudio,
     toggleVideo,
+    selectAudioDevice,
+    selectVideoDevice,
+    selectOutputDevice,
+    toggleOutput,
   };
+}
+
+/**
+ * Безопасно читает `deviceId` дорожки (в т.ч. в окружениях без `getSettings`).
+ * @param {MediaStreamTrack | null} track
+ * @returns {string | null}
+ */
+function trackDeviceId(track) {
+  return typeof track?.getSettings === 'function' ? (track.getSettings().deviceId ?? null) : null;
+}
+
+/**
+ * Ограничение `video` для `getUserMedia`: конкретное устройство, если выбрано,
+ * иначе любое (`true`).
+ * @param {string | null} deviceId
+ * @returns {MediaTrackConstraints | boolean}
+ */
+function videoConstraint(deviceId) {
+  return deviceId ? { deviceId: { exact: deviceId } } : true;
+}
+
+/**
+ * Перечисляет устройства ввода и раскладывает по спискам микрофонов/камер.
+ * Метки доступны только после выдачи доступа (`getUserMedia`). Ошибки гасим —
+ * меню просто останется пустым.
+ * @param {Function} setAudioDevices
+ * @param {Function} setVideoDevices
+ */
+async function refreshDevices(setAudioDevices, setVideoDevices, setOutputDevices) {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const pick = (kind, fallback) =>
+      devices
+        .filter((d) => d.kind === kind && d.deviceId)
+        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `${fallback} ${i + 1}` }));
+    setAudioDevices(pick('audioinput', 'Микрофон'));
+    setVideoDevices(pick('videoinput', 'Камера'));
+    setOutputDevices(pick('audiooutput', 'Динамики'));
+  } catch (err) {
+    console.error('[pcm] enumerateDevices failed:', err);
+  }
 }
 
 /**

@@ -34,10 +34,21 @@ async function joinByLink(page, url, userName) {
   await enterName(page, userName);
 }
 
-/** Экран ввода имени на входе в комнату. */
-async function enterName(page, userName) {
+/**
+ * Форма входа в комнату: ввод имени + управление устройствами прямо в форме.
+ * Камера и микрофон выключены по умолчанию — включаем камеру (чтобы тесты видели
+ * видеопотоки) и входим по кнопке «Войти».
+ * @param {import('@playwright/test').Page} page
+ * @param {string} userName
+ * @param {{ camera?: boolean }} [opts]
+ */
+async function enterName(page, userName, { camera = true } = {}) {
   await page.getByPlaceholder('Введите ваше имя').fill(userName);
-  await page.getByRole('button', { name: 'Войти' }).click();
+  if (camera) {
+    await page.getByRole('button', { name: 'Включить камеру' }).click();
+    await expect(page.getByRole('button', { name: 'Выключить камеру' })).toBeVisible();
+  }
+  await page.getByRole('button', { name: 'Войти', exact: true }).click();
 }
 
 /** Дожидается, пока в `<video>` пойдёт декодированный кадр (поток виден). */
@@ -97,12 +108,15 @@ test.describe('Видеочат-комната E2E', () => {
     const alice = await newParticipant(browser);
     await createRoom(alice.page, 'Алиса');
 
-    // До выключения индикатора нет.
+    // Микрофон выключен по умолчанию → индикатор виден сразу (PRD п. 16).
+    await expect(alice.page.getByLabel('Микрофон выключен')).toBeVisible();
+
+    // Включаем микрофон — индикатор исчезает.
+    await alice.page.getByRole('button', { name: 'Включить микрофон' }).click();
     await expect(alice.page.getByLabel('Микрофон выключен')).toHaveCount(0);
 
+    // Снова выключаем — индикатор возвращается.
     await alice.page.getByRole('button', { name: 'Выключить микрофон' }).click();
-
-    // На плитке появляется иконка перечёркнутого микрофона (PRD п. 16).
     await expect(alice.page.getByLabel('Микрофон выключен')).toBeVisible();
 
     await alice.context.close();

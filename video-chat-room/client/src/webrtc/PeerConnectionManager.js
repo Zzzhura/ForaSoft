@@ -56,7 +56,8 @@ export class PeerConnectionManager {
 
     /**
      * socketId → запись о соединении.
-     * @type {Map<string, { pc: RTCPeerConnection, videoSender: RTCRtpSender | null,
+     * @type {Map<string, { pc: RTCPeerConnection, audioSender: RTCRtpSender | null,
+     *                      videoSender: RTCRtpSender | null,
      *                      pendingCandidates: RTCIceCandidateInit[] }>}
      */
     this.peers = new Map();
@@ -88,8 +89,8 @@ export class PeerConnectionManager {
     }
 
     const pc = new RTCPeerConnection(this.rtcConfig);
-    const videoSender = this.#attachLocalMedia(pc);
-    const record = { pc, videoSender, pendingCandidates: [] };
+    const { audioSender, videoSender } = this.#attachLocalMedia(pc);
+    const record = { pc, audioSender, videoSender, pendingCandidates: [] };
     this.peers.set(socketId, record);
 
     // Локальные ICE-кандидаты → удалённому участнику через relay сервера.
@@ -219,6 +220,20 @@ export class PeerConnectionManager {
   }
 
   /**
+   * Заменяет исходящую аудиодорожку на всех соединениях без ре-negotiation
+   * (смена устройства ввода — выбор микрофона). Используется при выборе другого
+   * микрофона: новая дорожка подменяется в каждом sender.
+   * @param {MediaStreamTrack | null} track
+   */
+  replaceAudioTrack(track) {
+    for (const { audioSender } of this.peers.values()) {
+      audioSender
+        ?.replaceTrack(track)
+        .catch((err) => console.error('[pcm] replaceAudioTrack failed:', err));
+    }
+  }
+
+  /**
    * Включает/выключает исходящее аудио на всех соединениях через `track.enabled`
    * (mute без ре-negotiation, TDD §7.3 — задача 12). Все pc делят одну локальную
    * аудиодорожку, поэтому достаточно переключить её `enabled`.
@@ -245,27 +260,35 @@ export class PeerConnectionManager {
    * Добавляет локальные дорожки в соединение. Видео всегда заводится как
    * sendrecv-трансивер (даже без камеры), чтобы тумблер камеры (задача 12) мог
    * включить её позже через `replaceTrack` без ре-negotiation. Аудио: если
-   * микрофона нет — recvonly (участник без устройств всё равно слышит других, US-12).
+   * микрофона нет — recvonly (участник без устройств всё равно слышит других,
+   * US-12). Смена микрофона доступна только при наличии устройства, поэтому
+   * recvonly-кейсу sender для отправки не нужен.
    * @param {RTCPeerConnection} pc
-   * @returns {RTCRtpSender | null} sender видеодорожки (для replaceVideoTrack).
+   * @returns {{ audioSender: RTCRtpSender, videoSender: RTCRtpSender }} senders дорожек.
    */
   #attachLocalMedia(pc) {
     const stream = this.localStream;
     const audioTrack = stream?.getAudioTracks()[0] ?? null;
     const videoTrack = stream?.getVideoTracks()[0] ?? null;
 
-    if (audioTrack) {
-      pc.addTrack(audioTrack, stream);
-    } else {
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-    }
+    const audioSender = audioTrack
+      ? pc.addTrack(audioTrack, stream)
+      : pc.addTransceiver('audio', { direction: 'recvonly' }).sender;
 
-    if (videoTrack) {
-      return pc.addTrack(videoTrack, stream);
-    }
-    // Нет камеры сейчас — заводим отправляющий трансивер «про запас».
-    const transceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
-    return transceiver.sender;
+    const videoSender = videoTrack
+      ? pc.addTrack(videoTrack, stream)
+      : // Нет камеры сейчас (выключена по умолчанию) — заводим отправляющий
+        // трансивер «про запас». Привязываем его к тому же `stream`, что и аудио
+        // (`streams`), чтобы msid совпал: иначе при позднем включении камеры
+        // (replaceTrack без renegotiation) у удалённого участника видеодорожка не
+        // попадёт в отображаемый MediaStream (ontrack приходит с пустым
+        // event.streams) — будет чёрная плитка вместо видео.
+        pc.addTransceiver('video', {
+          direction: 'sendrecv',
+          streams: stream ? [stream] : [],
+        }).sender;
+
+    return { audioSender, videoSender };
   }
 
   /**
