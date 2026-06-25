@@ -58,10 +58,14 @@ export class PeerConnectionManager {
      * socketId → запись о соединении.
      * @type {Map<string, { pc: RTCPeerConnection, audioSender: RTCRtpSender | null,
      *                      videoSender: RTCRtpSender | null,
-     *                      pendingCandidates: RTCIceCandidateInit[] }>}
+     *                      pendingCandidates: RTCIceCandidateInit[],
+     *                      remoteStream: MediaStream | null }>}
      */
     this.peers = new Map();
   }
+
+  /** @type {WeakSet<MediaStreamTrack>} дорожки с подписанным onunmute. */
+  #unmuteHooked = new WeakSet();
 
   /**
    * Возвращает true, если этот клиент инициирует offer для пары с `peerId`
@@ -108,16 +112,8 @@ export class PeerConnectionManager {
     // отображаемый поток и плитка осталась бы чёрной. Дорожка-приёмник приходит
     // в ontrack уже на negotiation (sendrecv), кадры по ней начинают идти после
     // replaceTrack — `<video>` с этим потоком их подхватывает.
-    pc.ontrack = (event) => {
-      const rec = this.peers.get(socketId);
-      if (!rec) return;
-      if (!rec.remoteStream) {
-        rec.remoteStream = new MediaStream();
-      }
-      if (event.track && !rec.remoteStream.getTracks().includes(event.track)) {
-        rec.remoteStream.addTrack(event.track);
-      }
-      this.onRemoteStream?.(socketId, rec.remoteStream);
+    pc.ontrack = () => {
+      this.#syncRemoteStreamTracks(socketId);
     };
 
     // Деградация без падения комнаты (задача 20, TDD §13): сбой ICE одной пары
@@ -127,6 +123,11 @@ export class PeerConnectionManager {
     // не делаем (TBD-3, PRD F-18: возврат только вручную).
     pc.onconnectionstatechange = () => {
       this.onPeerState?.(socketId, pc.connectionState);
+      // После ICE/DTLS дорожки приёмника могут появиться без повторного ontrack
+      // (sendrecv-трансивер с пустым sender при выключенной камере на старте).
+      if (pc.connectionState === 'connected') {
+        this.#syncRemoteStreamTracks(socketId);
+      }
     };
 
     const shouldOffer = initiator ?? this.isInitiator(socketId);
@@ -160,6 +161,7 @@ export class PeerConnectionManager {
       await this.#flushCandidates(record);
       const answer = await record.pc.createAnswer();
       await record.pc.setLocalDescription(answer);
+      this.#syncRemoteStreamTracks(socketId);
       this.sendSignal('answer', socketId, { sdp: record.pc.localDescription });
     } catch (err) {
       console.error(`[pcm] handleOffer failed for ${socketId}:`, err);
@@ -177,6 +179,7 @@ export class PeerConnectionManager {
     try {
       await record.pc.setRemoteDescription(sdp);
       await this.#flushCandidates(record);
+      this.#syncRemoteStreamTracks(socketId);
     } catch (err) {
       console.error(`[pcm] handleAnswer failed for ${socketId}:`, err);
     }
@@ -218,14 +221,33 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Заменяет исходящую видеодорожку на всех соединениях без ре-negotiation
-   * (TDD §7.3, тумблер камеры — задача 12). `track = null` — перестаём слать видео.
+   * Заменяет исходящую видеодорожку на всех соединениях. Без камеры на момент
+   * входа video-трансивер не создаётся (#attachLocalMedia) — при первом
+   * включении добавляется sendrecv-трансивер и уходит renegotiation offer
+   * (US-6). `track = null` — перестаём слать видео без renegotiation (TDD §7.3).
    * @param {MediaStreamTrack | null} track
    */
   replaceVideoTrack(track) {
-    for (const { videoSender } of this.peers.values()) {
-      videoSender
-        ?.replaceTrack(track)
+    for (const [socketId, record] of this.peers) {
+      if (track) {
+        if (!record.videoSender) {
+          record.videoSender = record.pc
+            .addTransceiver('video', { direction: 'sendrecv' })
+            .sender;
+        }
+        const isNewVideo = !record.videoSender.track;
+        record.videoSender
+          .replaceTrack(track)
+          .then(async () => {
+            if (isNewVideo) {
+              await this.#makeOffer(socketId);
+            }
+          })
+          .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
+        continue;
+      }
+      record.videoSender
+        ?.replaceTrack(null)
         .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
     }
   }
@@ -268,14 +290,13 @@ export class PeerConnectionManager {
   // --- внутреннее ---
 
   /**
-   * Добавляет локальные дорожки в соединение. Видео всегда заводится как
-   * sendrecv-трансивер (даже без камеры), чтобы тумблер камеры (задача 12) мог
-   * включить её позже через `replaceTrack` без ре-negotiation. Аудио: если
+   * Добавляет локальные дорожки в соединение. Видео-трансивер создаётся только
+   * если камера уже включена; иначе видео добавляется при первом `replaceVideoTrack`
+   * (US-6: вход без камеры → включение в звонке с renegotiation). Аудио: если
    * микрофона нет — recvonly (участник без устройств всё равно слышит других,
-   * US-12). Смена микрофона доступна только при наличии устройства, поэтому
-   * recvonly-кейсу sender для отправки не нужен.
+   * US-12).
    * @param {RTCPeerConnection} pc
-   * @returns {{ audioSender: RTCRtpSender, videoSender: RTCRtpSender }} senders дорожек.
+   * @returns {{ audioSender: RTCRtpSender | null, videoSender: RTCRtpSender | null }}
    */
   #attachLocalMedia(pc) {
     const stream = this.localStream;
@@ -286,16 +307,71 @@ export class PeerConnectionManager {
       ? pc.addTrack(audioTrack, stream)
       : pc.addTransceiver('audio', { direction: 'recvonly' }).sender;
 
-    const videoSender = videoTrack
-      ? pc.addTrack(videoTrack, stream)
-      : // Нет камеры сейчас (выключена по умолчанию) — заводим отправляющий
-        // sendrecv-трансивер «про запас», чтобы при включении камеры подменить
-        // дорожку через replaceTrack без renegotiation. Привязку входящей видео-
-        // дорожки к потоку участника на стороне приёма обеспечивает ontrack
-        // (собственный MediaStream), а не msid этого трансивера.
-        pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+    const videoSender = videoTrack ? pc.addTrack(videoTrack, stream) : null;
 
     return { audioSender, videoSender };
+  }
+
+  /**
+   * Выбирает по одной актуальной входящей дорожке каждого kind из приёмников.
+   * После renegotiation при позднем включении камеры может быть два video-receiver:
+   * старый muted и новый с кадрами — оставляем unmuted.
+   * @param {RTCPeerConnection} pc
+   * @returns {MediaStreamTrack[]}
+   */
+  #pickReceiverTracks(pc) {
+    /** @type {Map<string, MediaStreamTrack>} */
+    const byKind = new Map();
+    for (const { track } of pc.getReceivers()) {
+      if (!track || track.readyState === 'ended') {
+        continue;
+      }
+      const prev = byKind.get(track.kind);
+      if (!prev || (prev.muted && !track.muted)) {
+        byKind.set(track.kind, track);
+      }
+    }
+    return [...byKind.values()];
+  }
+
+  /**
+   * Собирает входящие дорожки всех RTCRtpReceiver в единый MediaStream участника.
+   * Поток пересобирается целиком — без «залипших» muted-дорожек после renegotiation.
+   * @param {string} socketId
+   */
+  #syncRemoteStreamTracks(socketId) {
+    const record = this.peers.get(socketId);
+    if (!record) return;
+
+    const tracks = this.#pickReceiverTracks(record.pc);
+    if (tracks.length === 0) return;
+
+    const prevIds =
+      record.remoteStream
+        ?.getTracks()
+        .map((t) => t.id)
+        .sort()
+        .join(',') ?? '';
+    const nextIds = tracks
+      .map((t) => t.id)
+      .sort()
+      .join(',');
+
+    record.remoteStream = new MediaStream(tracks);
+
+    for (const track of tracks) {
+      if (this.#unmuteHooked.has(track)) {
+        continue;
+      }
+      this.#unmuteHooked.add(track);
+      track.onunmute = () => {
+        this.#syncRemoteStreamTracks(socketId);
+      };
+    }
+
+    if (prevIds !== nextIds || prevIds === '') {
+      this.onRemoteStream?.(socketId, record.remoteStream);
+    }
   }
 
   /**

@@ -71,7 +71,9 @@ export default function EntryScreen({
           )}
           <div className="start__heading">
             <h1 className="start__title">{title}</h1>
-            <p className="start__byline">{byline}</p>
+            <a className="start__byline" href="https://www.forasoft.com/" target="_blank" rel="noreferrer">
+              <span>{byline}</span>
+            </a>
           </div>
         </div>
 

@@ -49,20 +49,39 @@ export default function VideoTile({
   // сообщаем наверх (`onPlayBlocked`) — RoomScreen покажет баннер «Включить звук».
   // Self-view заглушён (`muted`), его автозапуск не блокируется. Повтор play()
   // по смене `playToken` происходит уже внутри пользовательского жеста.
+  const videoTrackId = stream?.getVideoTracks()[0]?.id ?? null;
+
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (el.srcObject !== stream) {
-      el.srcObject = stream;
-    }
+
+    const startPlayback = () => {
+      if (el.srcObject !== stream) {
+        el.srcObject = stream;
+      }
+      if (!stream) return;
+      const playback = el.play();
+      if (playback && typeof playback.catch === 'function') {
+        playback.catch(() => {
+          if (!isSelf) onPlayBlocked?.();
+        });
+      }
+    };
+
+    startPlayback();
     if (!stream) return;
-    const playback = el.play();
-    if (playback && typeof playback.catch === 'function') {
-      playback.catch(() => {
-        if (!isSelf) onPlayBlocked?.();
-      });
+    stream.addEventListener('addtrack', startPlayback);
+    const videoTracks = stream.getVideoTracks();
+    for (const track of videoTracks) {
+      track.onunmute = startPlayback;
     }
-  }, [stream, isSelf, onPlayBlocked, playToken]);
+    return () => {
+      stream.removeEventListener('addtrack', startPlayback);
+      for (const track of videoTracks) {
+        track.onunmute = null;
+      }
+    };
+  }, [stream, videoTrackId, isSelf, onPlayBlocked, playToken]);
 
   // Маршрутизация звука на выбранное устройство вывода (динамики). setSinkId есть
   // не во всех браузерах — при отсутствии просто пропускаем. Self-view заглушён,

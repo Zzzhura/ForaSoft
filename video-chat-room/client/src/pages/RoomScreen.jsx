@@ -379,7 +379,7 @@ export default function RoomScreen() {
         stream,
         isSelf: false,
         audioEnabled: media?.audioEnabled ?? true,
-        videoEnabled: (media?.videoEnabled ?? true) && Boolean(stream),
+        videoEnabled: (media?.videoEnabled ?? true) && Boolean(stream?.getVideoTracks().length),
         // 'failed' → ICE-сбой пары (строгий NAT / STUN недоступен): показываем
         // индикатор, но участника оставляем (задача 20, TDD §14 TBD-1).
         connectionFailed: peerStates[member.socketId] === 'failed',

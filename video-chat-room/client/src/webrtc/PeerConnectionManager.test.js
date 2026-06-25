@@ -28,6 +28,8 @@ class MockRTCPeerConnection {
     this.addedIceCandidates = [];
     this.senders = [];
     this.transceivers = [];
+    /** @type {{ track: object | null }[]} Приёмники (отдельно от senders). */
+    this.receivers = [];
     MockRTCPeerConnection.instances.push(this);
   }
 
@@ -74,6 +76,10 @@ class MockRTCPeerConnection {
   addIceCandidate(candidate) {
     this.addedIceCandidates.push(candidate);
     return Promise.resolve();
+  }
+
+  getReceivers() {
+    return this.receivers;
   }
 
   close() {
@@ -192,13 +198,18 @@ describe('addPeer', () => {
     expect(pc.senders).toHaveLength(2);
   });
 
-  test('без локального потока заводит recvonly-аудио и sendrecv-видео трансиверы', () => {
+  test('без видеодорожки videoSender=null до replaceVideoTrack', () => {
+    const { pcm } = makePCM({ localStream: fakeLocalStream({ video: false }) });
+    pcm.addPeer('b');
+    expect(pcm.peers.get('b')?.videoSender).toBeNull();
+  });
+
+  test('без локального потока заводит recvonly-аудио; видео — при replaceVideoTrack', () => {
     const { pcm } = makePCM({ localStream: null });
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers).toHaveLength(2);
+    expect(pc.transceivers).toHaveLength(1);
     expect(pc.transceivers[0]).toMatchObject({ kind: 'audio', direction: 'recvonly' });
-    expect(pc.transceivers[1]).toMatchObject({ kind: 'video', direction: 'sendrecv' });
   });
 });
 
@@ -274,17 +285,16 @@ describe('колбэки UI', () => {
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
 
-    // event.streams игнорируем (msid ненадёжен) — копим по event.track.
+    // event.streams игнорируем (msid ненадёжен) — копим по getReceivers().
     const audio = { kind: 'audio' };
     const video = { kind: 'video' };
+    pc.receivers.push({ track: audio });
     pc.ontrack({ track: audio, streams: [] });
+    pc.receivers.push({ track: video });
     pc.ontrack({ track: video, streams: [] });
 
     expect(onRemoteStream).toHaveBeenCalledTimes(2);
-    // Оба ontrack отдают один и тот же объект потока (один на участника)...
     const stream = onRemoteStream.mock.calls[1][1];
-    expect(onRemoteStream.mock.calls[0][1]).toBe(stream);
-    // ...и в нём собраны обе дорожки (видео, включённое позже, не «теряется»).
     expect(stream.getTracks()).toEqual([audio, video]);
   });
 
@@ -309,6 +319,23 @@ describe('тумблеры и закрытие', () => {
     const newTrack = { kind: 'video' };
     pcm.replaceVideoTrack(newTrack);
     expect(videoSender.replaceTrack).toHaveBeenCalledWith(newTrack);
+  });
+
+  test('replaceVideoTrack без videoSender создаёт трансивер и offer (US-6)', async () => {
+    const { pcm, sendSignal } = makePCM({ localStream: fakeLocalStream({ video: false }) });
+    pcm.addPeer('b');
+    await flush();
+    sendSignal.mockClear();
+
+    pcm.replaceVideoTrack({ kind: 'video' });
+    await flush();
+    await flush();
+
+    const [pc] = MockRTCPeerConnection.instances;
+    expect(pc.transceivers.some((t) => t.kind === 'video')).toBe(true);
+    expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
+      sdp: { type: 'offer', sdp: 'offer-sdp' },
+    });
   });
 
   test('setAudioEnabled переключает enabled общей аудиодорожки (mute, §7.3)', () => {
