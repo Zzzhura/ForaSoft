@@ -84,6 +84,28 @@ test.describe('Видеочат-комната E2E', () => {
     await bob.context.close();
   });
 
+  test('US-6: новичок без камеры видит видео участника с включённой камерой', async ({
+    browser,
+  }) => {
+    const alice = await newParticipant(browser);
+    await alice.page.goto('/');
+    await alice.page.getByPlaceholder('Введите название комнаты').fill(ROOM_NAME);
+    await alice.page.getByRole('button', { name: 'Создать комнату' }).click();
+    await enterName(alice.page, 'Алиса', false);
+    const url = alice.page.url();
+
+    const bob = await newParticipant(browser);
+    await bob.page.goto(url);
+    await enterName(bob.page, 'Боб', true);
+
+    // Алиса (камера off) должна видеть видео Боба (камера on).
+    await expectVideoPlaying(alice.page.locator('.tile__video:not(.tile__video--self)').first());
+    await expect(alice.page.getByLabel('Камера выключена')).toHaveCount(0);
+
+    await alice.context.close();
+    await bob.context.close();
+  });
+
   test('US-6: камера, включённая уже в звонке, видна другому участнику (без чёрной плитки)', async ({
     browser,
   }) => {

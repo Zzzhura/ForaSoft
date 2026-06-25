@@ -176,6 +176,11 @@ export default function RoomScreen() {
       setRemoteMembers((prev) =>
         prev.some((m) => m.socketId === socketId) ? prev : [...prev, { socketId, name: peerName }],
       );
+      // До media:state считаем камеру включённой (PRD п. 13); силуэт — только
+      // по флагу media:state, а не по наличию video-трека в потоке (US-12).
+      setRemoteMediaState((prev) =>
+        prev[socketId] ? prev : { ...prev, [socketId]: { audioEnabled: true, videoEnabled: true } },
+      );
       pcmRef.current?.addPeer(socketId);
     },
     onPeerLeft: ({ socketId }) => {
@@ -357,10 +362,9 @@ export default function RoomScreen() {
     return <NoticeScreen title="Подключение к комнате" text="Устанавливаем соединение…" />;
   }
 
-  // self-view — первой плиткой (PRD F-07); удалённые участники следом. Состояние
-  // микрофона/камеры удалённых приходит по media:state (US-7/US-12); до первого
-  // события считаем устройства включёнными (PRD п. 13). Силуэт показываем, когда
-  // камера выключена ИЛИ поток ещё не пришёл.
+  // self-view — первой плиткой (PRD F-07); удалённые участники следом. Силуэт
+  // камеры — только по media:state (US-7/US-12), не по наличию video-трека в
+  // WebRTC-потоке (пока идёт negotiation, трек может ещё не прийти).
   const tiles = [
     {
       id: selfId ?? 'self',
@@ -379,7 +383,7 @@ export default function RoomScreen() {
         stream,
         isSelf: false,
         audioEnabled: media?.audioEnabled ?? true,
-        videoEnabled: (media?.videoEnabled ?? true) && Boolean(stream?.getVideoTracks().length),
+        videoEnabled: media?.videoEnabled ?? true,
         // 'failed' → ICE-сбой пары (строгий NAT / STUN недоступен): показываем
         // индикатор, но участника оставляем (задача 20, TDD §14 TBD-1).
         connectionFailed: peerStates[member.socketId] === 'failed',

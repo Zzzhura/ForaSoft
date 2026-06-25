@@ -55,6 +55,10 @@ class MockRTCPeerConnection {
     return transceiver;
   }
 
+  getTransceivers() {
+    return this.transceivers;
+  }
+
   createOffer() {
     return Promise.resolve({ type: 'offer', sdp: 'offer-sdp' });
   }
@@ -198,18 +202,28 @@ describe('addPeer', () => {
     expect(pc.senders).toHaveLength(2);
   });
 
-  test('без видеодорожки videoSender=null до replaceVideoTrack', () => {
+  test('без видеодорожки videoSender не создаётся (видео — при replaceVideoTrack, US-6)', () => {
     const { pcm } = makePCM({ localStream: fakeLocalStream({ video: false }) });
     pcm.addPeer('b');
-    expect(pcm.peers.get('b')?.videoSender).toBeNull();
+    const record = pcm.peers.get('b');
+    expect(record?.videoSender).toBeNull();
+    const [pc] = MockRTCPeerConnection.instances;
+    expect(pc.transceivers.some((t) => t.kind === 'video')).toBe(false);
   });
 
-  test('без локального потока заводит recvonly-аудио; видео — при replaceVideoTrack', () => {
-    const { pcm } = makePCM({ localStream: null });
-    pcm.addPeer('b');
-    const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers).toHaveLength(1);
-    expect(pc.transceivers[0]).toMatchObject({ kind: 'audio', direction: 'recvonly' });
+  test('без локального потока: recvonly audio, video-трансивер не создаётся', () => {
+    const { pcm: pcmInit } = makePCM({ selfId: 'a', localStream: null });
+    pcmInit.addPeer('b');
+    const [pcInit] = MockRTCPeerConnection.instances;
+    expect(pcInit.transceivers).toHaveLength(1);
+    expect(pcInit.transceivers[0]).toMatchObject({ kind: 'audio', direction: 'recvonly' });
+
+    MockRTCPeerConnection.instances = [];
+    const { pcm: pcmAns } = makePCM({ selfId: 'z', localStream: null });
+    pcmAns.addPeer('a', { initiator: false });
+    const [pcAns] = MockRTCPeerConnection.instances;
+    expect(pcAns.transceivers).toHaveLength(1);
+    expect(pcAns.transceivers[0]).toMatchObject({ kind: 'audio', direction: 'recvonly' });
   });
 });
 
@@ -321,7 +335,7 @@ describe('тумблеры и закрытие', () => {
     expect(videoSender.replaceTrack).toHaveBeenCalledWith(newTrack);
   });
 
-  test('replaceVideoTrack без videoSender создаёт трансивер и offer (US-6)', async () => {
+  test('replaceVideoTrack без videoSender добавляет sendrecv и offer (US-6)', async () => {
     const { pcm, sendSignal } = makePCM({ localStream: fakeLocalStream({ video: false }) });
     pcm.addPeer('b');
     await flush();
@@ -332,7 +346,8 @@ describe('тумблеры и закрытие', () => {
     await flush();
 
     const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers.some((t) => t.kind === 'video')).toBe(true);
+    expect(pc.transceivers.filter((t) => t.kind === 'video')).toHaveLength(1);
+    expect(pc.transceivers[0]).toMatchObject({ kind: 'video', direction: 'sendrecv' });
     expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
       sdp: { type: 'offer', sdp: 'offer-sdp' },
     });

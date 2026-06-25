@@ -93,6 +93,7 @@ export class PeerConnectionManager {
     }
 
     const pc = new RTCPeerConnection(this.rtcConfig);
+    const shouldOffer = initiator ?? this.isInitiator(socketId);
     const { audioSender, videoSender } = this.#attachLocalMedia(pc);
     const record = { pc, audioSender, videoSender, pendingCandidates: [], remoteStream: null };
     this.peers.set(socketId, record);
@@ -130,7 +131,6 @@ export class PeerConnectionManager {
       }
     };
 
-    const shouldOffer = initiator ?? this.isInitiator(socketId);
     if (shouldOffer) {
       // createOffer вызывается после добавления локальных дорожек/трансиверов,
       // чтобы m-секции попали в SDP. Ошибки не пробрасываем — не валим приложение.
@@ -221,22 +221,18 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Заменяет исходящую видеодорожку на всех соединениях. Без камеры на момент
-   * входа video-трансивер не создаётся (#attachLocalMedia) — при первом
-   * включении добавляется sendrecv-трансивер и уходит renegotiation offer
-   * (US-6). `track = null` — перестаём слать видео без renegotiation (TDD §7.3).
+   * Заменяет исходящую видеодорожку на всех соединениях. recvonly-трансивер
+   * (#attachLocalMedia) остаётся для приёма; исходящее — отдельный sendrecv +
+   * renegotiation при первой дорожке (US-6). `track = null` — перестаём слать
+   * видео без renegotiation (TDD §7.3).
    * @param {MediaStreamTrack | null} track
    */
   replaceVideoTrack(track) {
     for (const [socketId, record] of this.peers) {
       if (track) {
-        if (!record.videoSender) {
-          record.videoSender = record.pc
-            .addTransceiver('video', { direction: 'sendrecv' })
-            .sender;
-        }
-        const isNewVideo = !record.videoSender.track;
-        record.videoSender
+        const outbound = this.#ensureOutboundVideoSender(record);
+        const isNewVideo = !outbound.track;
+        outbound
           .replaceTrack(track)
           .then(async () => {
             if (isNewVideo) {
@@ -246,7 +242,7 @@ export class PeerConnectionManager {
           .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
         continue;
       }
-      record.videoSender
+      this.#findOutboundVideoSender(record)
         ?.replaceTrack(null)
         .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
     }
@@ -290,11 +286,6 @@ export class PeerConnectionManager {
   // --- внутреннее ---
 
   /**
-   * Добавляет локальные дорожки в соединение. Видео-трансивер создаётся только
-   * если камера уже включена; иначе видео добавляется при первом `replaceVideoTrack`
-   * (US-6: вход без камеры → включение в звонке с renegotiation). Аудио: если
-   * микрофона нет — recvonly (участник без устройств всё равно слышит других,
-   * US-12).
    * @param {RTCPeerConnection} pc
    * @returns {{ audioSender: RTCRtpSender | null, videoSender: RTCRtpSender | null }}
    */
@@ -310,6 +301,43 @@ export class PeerConnectionManager {
     const videoSender = videoTrack ? pc.addTrack(videoTrack, stream) : null;
 
     return { audioSender, videoSender };
+  }
+
+  /**
+   * Исходящий video-sender (sendrecv с дорожкой или без). recvonly из
+   * #attachLocalMedia не трогаем — он только для приёма чужого видео.
+   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
+   * @returns {RTCRtpSender | null}
+   */
+  #findOutboundVideoSender(record) {
+    const outboundTx = record.pc
+      .getTransceivers()
+      .find((t) => t.kind === 'video' && t.direction !== 'recvonly');
+    if (outboundTx) {
+      return outboundTx.sender;
+    }
+    // addTrack(video) при входе с камерой — sender не recvonly (в mock нет transceiver).
+    const recvTx = record.pc
+      .getTransceivers()
+      .find((t) => t.kind === 'video' && t.direction === 'recvonly');
+    if (record.videoSender && record.videoSender !== recvTx?.sender) {
+      return record.videoSender;
+    }
+    return null;
+  }
+
+  /**
+   * Гарантирует sendrecv-трансивер для исходящего видео; обновляет record.videoSender.
+   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
+   * @returns {RTCRtpSender}
+   */
+  #ensureOutboundVideoSender(record) {
+    let outbound = this.#findOutboundVideoSender(record);
+    if (!outbound) {
+      outbound = record.pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+    }
+    record.videoSender = outbound;
+    return outbound;
   }
 
   /**
