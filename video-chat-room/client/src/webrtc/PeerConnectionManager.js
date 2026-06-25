@@ -66,6 +66,8 @@ export class PeerConnectionManager {
 
   /** @type {WeakSet<MediaStreamTrack>} дорожки с подписанным onunmute. */
   #unmuteHooked = new WeakSet();
+  /** @type {Map<string, number>} отложенный resync remoteStream по socketId. */
+  #resyncTimers = new Map();
 
   /**
    * Возвращает true, если этот клиент инициирует offer для пары с `peerId`
@@ -114,7 +116,7 @@ export class PeerConnectionManager {
     // в ontrack уже на negotiation (sendrecv), кадры по ней начинают идти после
     // replaceTrack — `<video>` с этим потоком их подхватывает.
     pc.ontrack = () => {
-      this.#syncRemoteStreamTracks(socketId);
+      this.#scheduleStreamResync(socketId);
     };
 
     // Деградация без падения комнаты (задача 20, TDD §13): сбой ICE одной пары
@@ -127,7 +129,7 @@ export class PeerConnectionManager {
       // После ICE/DTLS дорожки приёмника могут появиться без повторного ontrack
       // (sendrecv-трансивер с пустым sender при выключенной камере на старте).
       if (pc.connectionState === 'connected') {
-        this.#syncRemoteStreamTracks(socketId);
+        this.#scheduleStreamResync(socketId);
       }
     };
 
@@ -161,7 +163,7 @@ export class PeerConnectionManager {
       await this.#flushCandidates(record);
       const answer = await record.pc.createAnswer();
       await record.pc.setLocalDescription(answer);
-      this.#syncRemoteStreamTracks(socketId);
+      this.#scheduleStreamResync(socketId);
       this.sendSignal('answer', socketId, { sdp: record.pc.localDescription });
     } catch (err) {
       console.error(`[pcm] handleOffer failed for ${socketId}:`, err);
@@ -179,7 +181,7 @@ export class PeerConnectionManager {
     try {
       await record.pc.setRemoteDescription(sdp);
       await this.#flushCandidates(record);
-      this.#syncRemoteStreamTracks(socketId);
+      this.#scheduleStreamResync(socketId);
     } catch (err) {
       console.error(`[pcm] handleAnswer failed for ${socketId}:`, err);
     }
@@ -221,31 +223,51 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Заменяет исходящую видеодорожку на всех соединениях. recvonly-трансивер
-   * (#attachLocalMedia) остаётся для приёма; исходящее — отдельный sendrecv +
-   * renegotiation при первой дорожке (US-6). `track = null` — перестаём слать
-   * видео без renegotiation (TDD §7.3).
+   * Заменяет исходящую видеодорожку на всех соединениях. Пустой sendrecv-трансивер
+   * (#attachLocalMedia) заменяем на addTrack + renegotiation — replaceTrack на
+   * «пустой» m=video не размутит receiver у peer (US-6).
    * @param {MediaStreamTrack | null} track
    */
   replaceVideoTrack(track) {
     for (const [socketId, record] of this.peers) {
       if (track) {
-        const outbound = this.#ensureOutboundVideoSender(record);
-        const isNewVideo = !outbound.track;
-        outbound
-          .replaceTrack(track)
-          .then(async () => {
-            if (isNewVideo) {
-              await this.#makeOffer(socketId);
-            }
-          })
-          .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
+        this.#enableOutboundVideo(socketId, record, track).catch((err) =>
+          console.error('[pcm] replaceVideoTrack failed:', err),
+        );
         continue;
       }
       this.#findOutboundVideoSender(record)
         ?.replaceTrack(null)
         .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
     }
+  }
+
+  /**
+   * Первое исходящее видео: addTrack + offer; далее — replaceTrack без renegotiation.
+   * @param {string} socketId
+   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
+   * @param {MediaStreamTrack} track
+   */
+  async #enableOutboundVideo(socketId, record, track) {
+    const stream = this.localStream;
+    const outbound = this.#findOutboundVideoSender(record);
+    if (outbound?.track) {
+      await outbound.replaceTrack(track);
+      return;
+    }
+
+    const emptyTx = record.pc
+      .getTransceivers()
+      .find((t) => t.kind === 'video' && !t.sender.track);
+    if (emptyTx && stream) {
+      emptyTx.stop();
+      record.videoSender = record.pc.addTrack(track, stream);
+      await this.#makeOffer(socketId);
+      return;
+    }
+
+    const sender = this.#ensureOutboundVideoSender(record);
+    await sender.replaceTrack(track);
   }
 
   /**
@@ -298,36 +320,35 @@ export class PeerConnectionManager {
       ? pc.addTrack(audioTrack, stream)
       : pc.addTransceiver('audio', { direction: 'recvonly' }).sender;
 
-    const videoSender = videoTrack ? pc.addTrack(videoTrack, stream) : null;
+    let videoSender = null;
+    if (videoTrack) {
+      videoSender = pc.addTrack(videoTrack, stream);
+    } else {
+      // sendrecv без дорожки: m=video в SDP с первого negotiation, позже replaceTrack
+      // без renegotiation (TDD §7.3, US-6). recvonly ломает unmute receiver у peer.
+      videoSender = pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+    }
 
     return { audioSender, videoSender };
   }
 
   /**
-   * Исходящий video-sender (sendrecv с дорожкой или без). recvonly из
-   * #attachLocalMedia не трогаем — он только для приёма чужого видео.
-   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
+   * Исходящий video-sender (sendrecv / addTrack). @param record
    * @returns {RTCRtpSender | null}
    */
   #findOutboundVideoSender(record) {
-    const outboundTx = record.pc
-      .getTransceivers()
-      .find((t) => t.kind === 'video' && t.direction !== 'recvonly');
-    if (outboundTx) {
-      return outboundTx.sender;
+    const tx = record.pc.getTransceivers().find((t) => t.kind === 'video');
+    if (tx) {
+      return tx.sender;
     }
-    // addTrack(video) при входе с камерой — sender не recvonly (в mock нет transceiver).
-    const recvTx = record.pc
-      .getTransceivers()
-      .find((t) => t.kind === 'video' && t.direction === 'recvonly');
-    if (record.videoSender && record.videoSender !== recvTx?.sender) {
+    if (record.videoSender) {
       return record.videoSender;
     }
     return null;
   }
 
   /**
-   * Гарантирует sendrecv-трансивер для исходящего видео; обновляет record.videoSender.
+   * Гарантирует sendrecv video-sender; при входе без камеры уже создан в #attachLocalMedia.
    * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
    * @returns {RTCRtpSender}
    */
@@ -371,34 +392,68 @@ export class PeerConnectionManager {
     const record = this.peers.get(socketId);
     if (!record) return;
 
+    this.#hookReceiverUnmute(socketId);
+
     const tracks = this.#pickReceiverTracks(record.pc);
     if (tracks.length === 0) return;
 
     const prevIds =
       record.remoteStream
         ?.getTracks()
-        .map((t) => t.id)
+        .map((t) => `${t.id}:${t.muted}`)
         .sort()
         .join(',') ?? '';
     const nextIds = tracks
-      .map((t) => t.id)
+      .map((t) => `${t.id}:${t.muted}`)
       .sort()
       .join(',');
 
     record.remoteStream = new MediaStream(tracks);
 
-    for (const track of tracks) {
-      if (this.#unmuteHooked.has(track)) {
+    if (prevIds !== nextIds) {
+      this.onRemoteStream?.(socketId, record.remoteStream);
+    }
+  }
+
+  /**
+   * Повторный sync после renegotiation: unmuted receiver может появиться без
+   * ontrack/onunmute (US-6, чёрная плитка при уже включённой камере у peer).
+   * @param {string} socketId
+   */
+  #scheduleStreamResync(socketId) {
+    const prev = this.#resyncTimers.get(socketId);
+    if (prev) {
+      clearTimeout(prev);
+    }
+    const run = () => this.#syncRemoteStreamTracks(socketId);
+    run();
+    queueMicrotask(run);
+    this.#resyncTimers.set(
+      socketId,
+      setTimeout(() => {
+        this.#resyncTimers.delete(socketId);
+        run();
+      }, 100),
+    );
+  }
+  /**
+   * Подписывает onunmute на все входящие дорожки приёмников (не только уже
+   * попавшие в remoteStream). После renegotiation unmuted-трек может появиться
+   * позже muted — без этого UI остаётся на чёрной плитке (US-6).
+   * @param {string} socketId
+   */
+  #hookReceiverUnmute(socketId) {
+    const record = this.peers.get(socketId);
+    if (!record) return;
+
+    for (const { track } of record.pc.getReceivers()) {
+      if (!track || this.#unmuteHooked.has(track)) {
         continue;
       }
       this.#unmuteHooked.add(track);
       track.onunmute = () => {
         this.#syncRemoteStreamTracks(socketId);
       };
-    }
-
-    if (prevIds !== nextIds || prevIds === '') {
-      this.onRemoteStream?.(socketId, record.remoteStream);
     }
   }
 
@@ -409,9 +464,14 @@ export class PeerConnectionManager {
   async #makeOffer(socketId) {
     const record = this.peers.get(socketId);
     if (!record) return;
-    const offer = await record.pc.createOffer();
-    await record.pc.setLocalDescription(offer);
-    this.sendSignal('offer', socketId, { sdp: record.pc.localDescription });
+    const { pc } = record;
+    if (pc.signalingState && pc.signalingState !== 'stable') {
+      console.warn(`[pcm] makeOffer skipped for ${socketId}: ${pc.signalingState}`);
+      return;
+    }
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    this.sendSignal('offer', socketId, { sdp: pc.localDescription });
   }
 
   /**

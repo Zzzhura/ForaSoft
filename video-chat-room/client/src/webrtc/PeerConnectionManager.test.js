@@ -21,6 +21,7 @@ class MockRTCPeerConnection {
     this.localDescription = null;
     this.remoteDescription = null;
     this.connectionState = 'new';
+    this.signalingState = 'stable';
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
@@ -50,7 +51,14 @@ class MockRTCPeerConnection {
   }
 
   addTransceiver(kind, opts) {
-    const transceiver = { kind, direction: opts?.direction, sender: this.#makeSender(null) };
+    const transceiver = {
+      kind,
+      direction: opts?.direction,
+      sender: this.#makeSender(null),
+      stop: vi.fn(function stop() {
+        transceiver.direction = 'stopped';
+      }),
+    };
     this.transceivers.push(transceiver);
     return transceiver;
   }
@@ -202,28 +210,40 @@ describe('addPeer', () => {
     expect(pc.senders).toHaveLength(2);
   });
 
-  test('без видеодорожки videoSender не создаётся (видео — при replaceVideoTrack, US-6)', () => {
-    const { pcm } = makePCM({ localStream: fakeLocalStream({ video: false }) });
-    pcm.addPeer('b');
-    const record = pcm.peers.get('b');
-    expect(record?.videoSender).toBeNull();
-    const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers.some((t) => t.kind === 'video')).toBe(false);
+  test('без видеодорожки: initiator и answerer — sendrecv video без дорожки', () => {
+    const { pcm: pcmInit } = makePCM({ selfId: 'a', localStream: fakeLocalStream({ video: false }) });
+    pcmInit.addPeer('b');
+    const [pcInit] = MockRTCPeerConnection.instances;
+    expect(pcInit.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
+      true,
+    );
+
+    MockRTCPeerConnection.instances = [];
+    const { pcm: pcmAns } = makePCM({ selfId: 'z', localStream: fakeLocalStream({ video: false }) });
+    pcmAns.addPeer('a', { initiator: false });
+    const [pcAns] = MockRTCPeerConnection.instances;
+    expect(pcAns.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
+      true,
+    );
   });
 
-  test('без локального потока: recvonly audio, video-трансивер не создаётся', () => {
+  test('без локального потока: recvonly audio + sendrecv video', () => {
     const { pcm: pcmInit } = makePCM({ selfId: 'a', localStream: null });
     pcmInit.addPeer('b');
     const [pcInit] = MockRTCPeerConnection.instances;
-    expect(pcInit.transceivers).toHaveLength(1);
-    expect(pcInit.transceivers[0]).toMatchObject({ kind: 'audio', direction: 'recvonly' });
+    expect(pcInit.transceivers).toHaveLength(2);
+    expect(pcInit.transceivers.some((t) => t.kind === 'audio' && t.direction === 'recvonly')).toBe(
+      true,
+    );
+    expect(pcInit.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
+      true,
+    );
 
     MockRTCPeerConnection.instances = [];
     const { pcm: pcmAns } = makePCM({ selfId: 'z', localStream: null });
     pcmAns.addPeer('a', { initiator: false });
     const [pcAns] = MockRTCPeerConnection.instances;
-    expect(pcAns.transceivers).toHaveLength(1);
-    expect(pcAns.transceivers[0]).toMatchObject({ kind: 'audio', direction: 'recvonly' });
+    expect(pcAns.transceivers).toHaveLength(2);
   });
 });
 
@@ -324,7 +344,7 @@ describe('колбэки UI', () => {
 });
 
 describe('тумблеры и закрытие', () => {
-  test('replaceVideoTrack меняет дорожку у video-sender каждого peer (тумблер камеры, §7.3)', () => {
+  test('replaceVideoTrack меняет дорожку у video-sender каждого peer (тумблер камеры, §7.3)', async () => {
     const { pcm } = makePCM();
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
@@ -332,22 +352,25 @@ describe('тумблеры и закрытие', () => {
 
     const newTrack = { kind: 'video' };
     pcm.replaceVideoTrack(newTrack);
+    await flush();
     expect(videoSender.replaceTrack).toHaveBeenCalledWith(newTrack);
   });
 
-  test('replaceVideoTrack без videoSender добавляет sendrecv и offer (US-6)', async () => {
+  test('replaceVideoTrack на пустом sendrecv — addTrack и offer (US-6)', async () => {
+    const localStream = fakeLocalStream({ video: false });
     const { pcm, sendSignal } = makePCM({ localStream: fakeLocalStream({ video: false }) });
+    pcm.localStream = localStream;
     pcm.addPeer('b');
     await flush();
     sendSignal.mockClear();
 
-    pcm.replaceVideoTrack({ kind: 'video' });
+    const newTrack = { kind: 'video' };
+    pcm.replaceVideoTrack(newTrack);
     await flush();
     await flush();
 
     const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers.filter((t) => t.kind === 'video')).toHaveLength(1);
-    expect(pc.transceivers[0]).toMatchObject({ kind: 'video', direction: 'sendrecv' });
+    expect(pc.transceivers[0].stop).toHaveBeenCalled();
     expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
       sdp: { type: 'offer', sdp: 'offer-sdp' },
     });

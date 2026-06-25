@@ -4,113 +4,127 @@
 без регистрации и без серверного хранения истории. Медиа — **WebRTC mesh (P2P)**,
 сигналинг и чат — **Socket.io**, состояние комнат — **в памяти** Node.js-сервера.
 
-Документы фичи: [PRD](../instuctions/prds/video-chat-room/prd-video-chat-room.md) ·
-[TDD](../instuctions/prds/video-chat-room/design-video-chat-room.md) ·
-[План задач](../instuctions/prds/video-chat-room/impl-video-chat-room.md).
+Документы фичи: [PRD](instuctions/prds/video-chat-room/prd-video-chat-room.md) ·
+[TDD](instuctions/prds/video-chat-room/design-video-chat-room.md) ·
+[План задач и трассировка](instuctions/prds/video-chat-room/impl-video-chat-room.md).
 
-> Этот каркас — результат **задачи 1 (Блок A)** плана: инициализация monorepo.
-> Бизнес-логика (комнаты, сигналинг, чат, UI) добавляется в задачах 3–18.
+## Возможности
+
+- Создание комнаты и вход по ссылке-приглашению (до 4 участников).
+- WebRTC mesh: видео/аудио P2P, сигналинг через сервер.
+- Текстовый чат в реальном времени с историей сессии и системными сообщениями.
+- Список участников в боковой панели (обновляется при входе/выходе, F-16/US-9).
+- Тумблеры микрофона и камеры, выбор устройств, индикатор «говорит».
+- Копирование ссылки-приглашения, выход из комнаты.
+- Обработка ошибок: комната заполнена, отказ в устройствах, сервер недоступен, WebRTC не поддерживается.
+
+## Ограничения и отклонения от PRD
+
+| Тема | Поведение |
+|------|-----------|
+| Mesh | До 4 участников; без TURN (строгий NAT может не пробиться). |
+| Reconnect | Нет автопереподключения — обрыв = выход, возврат вручную. |
+| БД | Нет — комнаты и чат только в памяти сервера. |
+| Камера/микрофон по умолчанию | **Выключены** при входе (opt-in тумблерами). PRD п. 13 требует включёнными — осознанное UX-решение (лампочка камеры не горит). |
 
 ## Стек
 
-- **Сервер:** Node.js (ES modules), Express (статика + health), Socket.io.
-- **Клиент:** React 18 + Vite, React Router.
+- **Сервер:** Node.js ≥ 18.18 (ES modules), Express, Socket.io.
+- **Клиент:** React 18, Vite, React Router, нативный WebRTC (`RTCPeerConnection`).
+- **Тесты:** Vitest (клиент), `node --test` (сервер), Playwright (E2E).
 - **Линт/формат:** ESLint (flat config) + Prettier.
-- Монорепозиторий на **npm workspaces**.
+- Монорепозиторий на **npm workspaces** (`video-chat-room/`).
 
 ## Структура
 
 ```
 video-chat-room/
-├── package.json            # workspaces + общие скрипты (dev/build/lint/format)
-├── eslint.config.js        # общий flat-config (server=Node, client=React)
-├── .prettierrc.json
-├── .editorconfig
+├── package.json              # workspaces + общие скрипты
+├── eslint.config.js
+├── playwright.config.js
+├── e2e/video-chat.spec.js    # E2E (8 сценариев, US из PRD)
+├── Dockerfile, docker-compose.yml, deploy/nginx.conf
+├── scripts/generate-cert.sh
 ├── server/
-│   ├── package.json
-│   ├── .env.example
-│   └── src/
-│       ├── index.js        # http + socket.io bootstrap, отдача статики SPA
-│       └── config.js       # конфиг из env
+│   ├── src/
+│   │   ├── index.js          # HTTP/HTTPS + Socket.io + статика SPA
+│   │   ├── config.js         # env-конфиг
+│   │   ├── rooms.js          # RoomRegistry (in-memory)
+│   │   ├── roomHandlers.js   # room:join/leave, media:state
+│   │   ├── signaling.js      # relay signal:offer/answer/ice
+│   │   ├── chat.js           # chat:send, системные сообщения
+│   │   └── validation.js     # sanitize имени/сообщений (XSS)
+│   └── test/                 # unit + integration (55 тестов)
 └── client/
-    ├── package.json
-    ├── vite.config.js      # dev-прокси /socket.io → сервер
-    ├── index.html
-    ├── .env.example
+    ├── public/               # icon.svg, forasoft-logo-full.svg
     └── src/
-        ├── main.jsx        # точка входа + BrowserRouter
-        ├── App.jsx         # роутинг Start ↔ Room
-        ├── index.css
-        └── pages/
-            ├── StartScreen.jsx   # заглушка (задача 13)
-            └── RoomScreen.jsx    # заглушка (задача 18)
+        ├── pages/            # StartScreen, RoomScreen
+        ├── components/       # VideoGrid, VideoTile, ChatPanel, ParticipantList, Controls, …
+        ├── webrtc/           # useLocalMedia, PeerConnectionManager, useSpeaking
+        └── socket/           # useSignaling
 ```
-
-Модули `rooms.js`, `signaling.js`, `chat.js`, `validation.js` (сервер) и
-`webrtc/`, `socket/`, `components/` (клиент) добавляются в своих задачах.
 
 ## Требования
 
-- Node.js **≥ 18.18** (разработка велась на Node 23).
+- Node.js **≥ 18.18**.
 - HTTPS или `localhost` — `getUserMedia`/WebRTC работают только в secure context.
 
 ## Установка
 
 ```bash
 cd video-chat-room
-npm install            # ставит зависимости обоих workspace
-cp server/.env.example server/.env
-cp client/.env.example client/.env
+npm install
+cp server/.env.example server/.env    # опционально
+cp client/.env.example client/.env    # опционально
 ```
 
 ## Запуск (dev)
 
 ```bash
-npm run dev            # сервер (:3001) и клиент (:5173) одновременно
+npm run dev            # сервер :3001 + клиент :5173
 # по отдельности:
 npm run dev:server
 npm run dev:client
 ```
 
-Откройте <http://localhost:5173>. Запросы `/socket.io` проксируются Vite на сервер,
-так что для браузера всё на одном origin.
+Откройте <http://localhost:5173>. Запросы `/socket.io` проксируются Vite на сервер.
 
 Проверка сервера: <http://localhost:3001/healthz> → `{ "status": "ok" }`.
 
 ## HTTPS / secure context
 
-`getUserMedia` и WebRTC работают только в **secure context** — это `https://…`
-**или** `http://localhost`. То есть на `localhost` всё работает по HTTP без настройки.
+`getUserMedia` и WebRTC работают в **secure context** — `https://…` или `http://localhost`.
 
-HTTPS нужен, когда вы открываете приложение **не с localhost** (например, по LAN-IP
-с другого устройства) или хотите паритет с продом. Включается одной командой:
+Для доступа не с localhost (LAN и т.п.):
 
 ```bash
-npm run certs          # самоподписанный сертификат → certs/ (localhost, 127.0.0.1)
-npm run dev            # теперь сервер и Vite поднимаются по HTTPS автоматически
+npm run certs          # самоподписанный сертификат → certs/
+npm run dev            # сервер и Vite поднимаются по HTTPS автоматически
 ```
 
-Логика общая для сервера и клиента: **если `certs/localhost-*.pem` существуют —
-оба поднимаются по HTTPS; если нет — по HTTP** (localhost остаётся secure context).
-Никакой ручной правки конфигов не нужно. Браузер покажет предупреждение о доверии
-к self-signed — это ожидаемо; для доверенного сертификата используйте
-[mkcert](https://github.com/FiloSottile/mkcert) и положите его файлы в `certs/`
-под теми же именами (или задайте пути через `SSL_KEY_FILE` / `SSL_CERT_FILE`).
-
-> Каталог `certs/` в `.gitignore` — сертификаты не коммитятся.
+Если `certs/localhost-*.pem` существуют — HTTPS; иначе HTTP (localhost остаётся secure context).
+Каталог `certs/` в `.gitignore`.
 
 ## Сборка (prod)
 
 ```bash
 npm run build          # client → client/dist
-npm start              # сервер отдаёт client/dist и поднимает Socket.io
+npm start              # сервер отдаёт client/dist + Socket.io на :3001
 ```
 
-## Линт и формат
+## Тесты и качество
 
 ```bash
 npm run lint
-npm run format         # или format:check
+npm run format:check
+npm run test           # server (55) + client (29) unit/integration
+npm run test:e2e       # Playwright, 8 E2E-сценариев (нужен build + certs для CI-паритета)
+```
+
+Для E2E локально без конфликта порта:
+
+```bash
+npm run build && CI=1 npm run test:e2e
 ```
 
 ## Переменные окружения
@@ -136,31 +150,28 @@ npm run format         # или format:check
 
 ## Деплой (Docker) и CI
 
-Один процесс: Node-сервер раздаёт собранный SPA (`client/dist`) и поднимает
-Socket.io на том же origin (TDD §12). TLS терминируется reverse-proxy'ем
-(`nginx`), который проксирует **WSS снаружи → ws внутрь**; сам контейнер слушает
-HTTP на `3001`.
+Один процесс: Node-сервер раздаёт SPA (`client/dist`) и Socket.io на одном origin.
+TLS — на reverse-proxy (`nginx`).
 
 ```bash
-docker build -t video-chat-room .      # multi-stage: сборка клиента + прод-сервер
+docker build -t video-chat-room .
 docker run -p 3001:3001 video-chat-room
 ```
 
-Полная композиция с reverse-proxy (TLS + WSS):
+С TLS и WSS:
 
 ```bash
-# 1. Положите сертификат в deploy/certs/{fullchain,privkey}.pem
-# 2. Укажите домен в deploy/nginx.conf (server_name) и CLIENT_ORIGIN в docker-compose.yml
+# deploy/certs/{fullchain,privkey}.pem + server_name в deploy/nginx.conf
 docker compose up --build
 ```
 
-- `Dockerfile` — multi-stage образ (один процесс).
-- `deploy/nginx.conf` — TLS-терминация + апгрейд WebSocket для `/socket.io`.
-- `docker-compose.yml` — `app` + `nginx` proxy.
+**CI** (`.github/workflows/ci.yml`, push/PR в `main`):
 
-**CI** (`.github/workflows/ci.yml`, на push/PR в `main`):
+1. `lint-test-build` — lint, format, unit/integration (84 теста), build.
+2. `e2e` — Playwright (fake-медиа Chromium).
+3. `docker-build` — сборка Docker-образа.
 
-- `lint-test-build` — `lint` + `format:check`, unit + integration тесты сервера,
-  unit-тесты клиента, сборка `client/dist` (артефакт).
-- `e2e` — Playwright (fake-медиа Chromium) на собранном приложении.
-- `docker-build` — проверка сборки Docker-образа.
+## Трассировка требований
+
+Статус задач 1–26 и соответствие PRD/US — в
+[impl-video-chat-room.md](instuctions/prds/video-chat-room/impl-video-chat-room.md).

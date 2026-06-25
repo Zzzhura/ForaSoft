@@ -3,6 +3,7 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import EntryScreen from '../components/EntryScreen.jsx';
 import VideoGrid from '../components/VideoGrid.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
+import ParticipantList from '../components/ParticipantList.jsx';
 import Controls from '../components/Controls.jsx';
 import MediaPreview from '../components/MediaPreview.jsx';
 import NoticeScreen from '../components/NoticeScreen.jsx';
@@ -475,6 +476,10 @@ export default function RoomScreen() {
       {/* Чат — прямоугольник во всю высоту справа (референс). */}
       {chatOpen && (
         <aside className="room__side">
+          <ParticipantList
+            members={selfId ? [{ socketId: selfId, name }, ...remoteMembers] : remoteMembers}
+            selfId={selfId ?? undefined}
+          />
           <ChatPanel
             messages={messages}
             onSend={signaling.sendChat}

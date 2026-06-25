@@ -637,6 +637,42 @@ body {
   cursor: default;
 }
 
+/* Список участников над чатом (задача 16, PRD F-16, US-9). */
+.participants {
+  flex-shrink: 0;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.participants__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.participants__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 6rem;
+  overflow-y: auto;
+}
+
+.participants__item {
+  font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.participants__self {
+  color: var(--text-muted);
+}
+
 /* Панель управления комнатой (задача 17, PRD F-09/F-10/F-17). */
 .controls {
   display: flex;
