@@ -3,15 +3,21 @@ import { PeerConnectionManager, DEFAULT_RTC_CONFIG } from './PeerConnectionManag
 
 /**
  * Unit-тесты `PeerConnectionManager` (задача 22, TDD §4.3/§7.1/§11; PRD F-06/F-07/F-09/F-10,
- * US-5/US-6/US-7/US-11). `RTCPeerConnection` подменяется моком — проверяем
- * детерминированное правило initiator (анти-glare), relay сигналинга, буферизацию
- * ICE, тумблеры и колбэки UI без реального WebRTC.
+ * US-5/US-6/US-7/US-11). `RTCPeerConnection` подменяется моком, моделирующим perfect
+ * negotiation: `onnegotiationneeded`, направления трансиверов и `setLocalDescription()`
+ * без аргумента (авто-offer/answer). Проверяем порождение offer, разрешение glare по
+ * роли polite/impolite, relay сигналинга, буферизацию ICE, тумблеры и колбэки UI.
  */
 
-/** Дать резолвнуться цепочке промисов (createOffer→setLocalDescription→sendSignal). */
+/** Дать резолвнуться микрозадачам/таймерам (negotiation→setLocalDescription→sendSignal). */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** Мок `RTCPeerConnection`: фиксирует вызовы и моментально резолвит SDP/ICE. */
+/**
+ * Мок `RTCPeerConnection` с моделью переговоров: addTrack/addTransceiver/смена
+ * `direction` ставят флаг negotiation-needed и асинхронно зовут `onnegotiationneeded`;
+ * `setLocalDescription()` без аргумента сам выбирает offer (из stable) или answer (из
+ * have-remote-offer); по достижении stable `currentDirection` трансиверов фиксируется.
+ */
 class MockRTCPeerConnection {
   /** @type {MockRTCPeerConnection[]} */
   static instances = [];
@@ -25,13 +31,26 @@ class MockRTCPeerConnection {
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
+    this.oniceconnectionstatechange = null;
+    this.onnegotiationneeded = null;
     this.closed = false;
     this.addedIceCandidates = [];
     this.senders = [];
     this.transceivers = [];
     /** @type {{ track: object | null }[]} Приёмники (отдельно от senders). */
     this.receivers = [];
+    this._negScheduled = false;
     MockRTCPeerConnection.instances.push(this);
+  }
+
+  /** Однократно (на тик) сигналим, что нужна (ре)negotiation. */
+  #scheduleNegotiation() {
+    if (this._negScheduled) return;
+    this._negScheduled = true;
+    queueMicrotask(() => {
+      this._negScheduled = false;
+      this.onnegotiationneeded?.();
+    });
   }
 
   #makeSender(track = null) {
@@ -46,52 +65,86 @@ class MockRTCPeerConnection {
     return sender;
   }
 
+  #makeTransceiver(kind, direction, sender) {
+    const self = this;
+    const tx = {
+      kind,
+      _direction: direction,
+      currentDirection: null,
+      sender,
+      get direction() {
+        return this._direction;
+      },
+      set direction(value) {
+        if (value === this._direction) return;
+        this._direction = value;
+        self.#scheduleNegotiation();
+      },
+      stop: vi.fn(function stop() {
+        tx._direction = 'stopped';
+        tx.currentDirection = 'stopped';
+      }),
+    };
+    this.transceivers.push(tx);
+    return tx;
+  }
+
   addTrack(track) {
-    return this.#makeSender(track);
+    const sender = this.#makeSender(track);
+    this.#makeTransceiver(track.kind, 'sendrecv', sender);
+    this.#scheduleNegotiation();
+    return sender;
   }
 
   addTransceiver(kind, opts) {
-    const transceiver = {
-      kind,
-      direction: opts?.direction,
-      sender: this.#makeSender(null),
-      stop: vi.fn(function stop() {
-        transceiver.direction = 'stopped';
-      }),
-    };
-    this.transceivers.push(transceiver);
-    return transceiver;
+    const sender = this.#makeSender(null);
+    const tx = this.#makeTransceiver(kind, opts?.direction ?? 'sendrecv', sender);
+    this.#scheduleNegotiation();
+    return tx;
   }
 
   getTransceivers() {
     return this.transceivers;
   }
 
-  createOffer() {
-    return Promise.resolve({ type: 'offer', sdp: 'offer-sdp' });
+  getReceivers() {
+    return this.receivers;
   }
 
-  createAnswer() {
-    return Promise.resolve({ type: 'answer', sdp: 'answer-sdp' });
+  #applyStable() {
+    for (const tx of this.transceivers) {
+      if (tx._direction !== 'stopped') tx.currentDirection = tx._direction;
+    }
   }
 
+  // Без аргумента: offer из stable, answer из have-remote-offer (perfect negotiation).
   setLocalDescription(desc) {
-    this.localDescription = desc;
+    const type = desc?.type ?? (this.signalingState === 'have-remote-offer' ? 'answer' : 'offer');
+    this.localDescription = { type, sdp: `${type}-sdp` };
+    if (type === 'offer') {
+      this.signalingState = 'have-local-offer';
+    } else {
+      this.signalingState = 'stable';
+      this.#applyStable();
+    }
     return Promise.resolve();
   }
 
   setRemoteDescription(desc) {
     this.remoteDescription = desc;
+    if (desc?.type === 'offer') {
+      // SRD(offer) из have-local-offer = неявный rollback нашего offer (perfect neg.).
+      this.signalingState = 'have-remote-offer';
+    } else {
+      this.signalingState = 'stable';
+      this.#applyStable();
+    }
     return Promise.resolve();
   }
 
   addIceCandidate(candidate) {
     this.addedIceCandidates.push(candidate);
     return Promise.resolve();
-  }
-
-  getReceivers() {
-    return this.receivers;
   }
 
   close() {
@@ -140,6 +193,13 @@ function makePCM(overrides = {}) {
   return { pcm, ...callbacks, ...overrides };
 }
 
+/** Доводит соединение до stable: ждёт первичный offer и подаёт answer. */
+async function settle(pcm, socketId) {
+  await flush();
+  await pcm.handleAnswer(socketId, { type: 'answer', sdp: 'ans' });
+  await flush();
+}
+
 beforeEach(() => {
   MockRTCPeerConnection.instances = [];
   globalThis.RTCPeerConnection = MockRTCPeerConnection;
@@ -151,37 +211,20 @@ afterEach(() => {
   delete globalThis.MediaStream;
 });
 
-describe('правило initiator (анти-glare, 10.1, §7.1)', () => {
+describe('правило initiator (роли polite/impolite, 10.1, §7.1)', () => {
   test('initiator — участник с лексикографически меньшим socketId', () => {
     const { pcm } = makePCM({ selfId: 'b' });
     expect(pcm.isInitiator('c')).toBe(true); // 'b' < 'c'
     expect(pcm.isInitiator('a')).toBe(false); // 'b' > 'a'
   });
 
-  test('addPeer как initiator отправляет offer', async () => {
+  test('addPeer порождает offer через onnegotiationneeded', async () => {
     const { pcm, sendSignal } = makePCM({ selfId: 'a' });
-    pcm.addPeer('b'); // 'a' < 'b' → мы initiator
+    pcm.addPeer('b');
     await flush();
-
     expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
       sdp: { type: 'offer', sdp: 'offer-sdp' },
     });
-  });
-
-  test('addPeer как не-initiator offer НЕ отправляет', async () => {
-    const { pcm, sendSignal } = makePCM({ selfId: 'z' });
-    pcm.addPeer('a'); // 'z' > 'a' → ждём offer от 'a'
-    await flush();
-
-    const offerCalls = sendSignal.mock.calls.filter(([type]) => type === 'offer');
-    expect(offerCalls).toHaveLength(0);
-  });
-
-  test('явный флаг initiator переопределяет правило', async () => {
-    const { pcm, sendSignal } = makePCM({ selfId: 'z' });
-    pcm.addPeer('a', { initiator: true });
-    await flush();
-    expect(sendSignal.mock.calls.some(([type]) => type === 'offer')).toBe(true);
   });
 });
 
@@ -210,40 +253,26 @@ describe('addPeer', () => {
     expect(pc.senders).toHaveLength(2);
   });
 
-  test('без видеодорожки: initiator и answerer — sendrecv video без дорожки', () => {
-    const { pcm: pcmInit } = makePCM({ selfId: 'a', localStream: fakeLocalStream({ video: false }) });
-    pcmInit.addPeer('b');
-    const [pcInit] = MockRTCPeerConnection.instances;
-    expect(pcInit.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
-      true,
-    );
-
-    MockRTCPeerConnection.instances = [];
-    const { pcm: pcmAns } = makePCM({ selfId: 'z', localStream: fakeLocalStream({ video: false }) });
-    pcmAns.addPeer('a', { initiator: false });
-    const [pcAns] = MockRTCPeerConnection.instances;
-    expect(pcAns.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
+  test('без видеодорожки: recvonly video-трансивер (принимать чужое видео)', () => {
+    const { pcm } = makePCM({ selfId: 'a', localStream: fakeLocalStream({ video: false }) });
+    pcm.addPeer('b');
+    const [pc] = MockRTCPeerConnection.instances;
+    expect(pc.transceivers.some((t) => t.kind === 'video' && t.direction === 'recvonly')).toBe(
       true,
     );
   });
 
-  test('без локального потока: recvonly audio + sendrecv video', () => {
-    const { pcm: pcmInit } = makePCM({ selfId: 'a', localStream: null });
-    pcmInit.addPeer('b');
-    const [pcInit] = MockRTCPeerConnection.instances;
-    expect(pcInit.transceivers).toHaveLength(2);
-    expect(pcInit.transceivers.some((t) => t.kind === 'audio' && t.direction === 'recvonly')).toBe(
+  test('без локального потока: recvonly audio + recvonly video', () => {
+    const { pcm } = makePCM({ selfId: 'a', localStream: null });
+    pcm.addPeer('b');
+    const [pc] = MockRTCPeerConnection.instances;
+    expect(pc.transceivers).toHaveLength(2);
+    expect(pc.transceivers.some((t) => t.kind === 'audio' && t.direction === 'recvonly')).toBe(
       true,
     );
-    expect(pcInit.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
+    expect(pc.transceivers.some((t) => t.kind === 'video' && t.direction === 'recvonly')).toBe(
       true,
     );
-
-    MockRTCPeerConnection.instances = [];
-    const { pcm: pcmAns } = makePCM({ selfId: 'z', localStream: null });
-    pcmAns.addPeer('a', { initiator: false });
-    const [pcAns] = MockRTCPeerConnection.instances;
-    expect(pcAns.transceivers).toHaveLength(2);
   });
 });
 
@@ -276,7 +305,7 @@ describe('relay сигналинга', () => {
 
   test('onicecandidate шлёт ICE адресату; пустой candidate игнорируется', () => {
     const { pcm, sendSignal } = makePCM({ selfId: 'z' });
-    pcm.addPeer('a', { initiator: false });
+    pcm.addPeer('a');
     const [pc] = MockRTCPeerConnection.instances;
 
     pc.onicecandidate({ candidate: { candidate: 'cand-1' } });
@@ -284,14 +313,14 @@ describe('relay сигналинга', () => {
 
     sendSignal.mockClear();
     pc.onicecandidate({ candidate: null });
-    expect(sendSignal).not.toHaveBeenCalled();
+    expect(sendSignal).not.toHaveBeenCalledWith('ice', 'a', expect.anything());
   });
 });
 
 describe('буферизация ICE-кандидатов', () => {
   test('кандидаты до remoteDescription буферизуются и применяются после', async () => {
     const { pcm } = makePCM({ selfId: 'z' });
-    pcm.addPeer('a', { initiator: false });
+    pcm.addPeer('a');
     const [pc] = MockRTCPeerConnection.instances;
 
     // remoteDescription ещё нет → кандидат буферизуется, не применяется.
@@ -310,6 +339,34 @@ describe('буферизация ICE-кандидатов', () => {
 
     await pcm.handleIce('a', { candidate: 'late' });
     expect(pc.addedIceCandidates).toContainEqual({ candidate: 'late' });
+  });
+});
+
+describe('perfect negotiation (glare)', () => {
+  test('impolite (initiator) игнорирует встречный offer при коллизии', async () => {
+    const { pcm, sendSignal } = makePCM({ selfId: 'a' }); // 'a' < 'b' → impolite
+    pcm.addPeer('b');
+    await flush(); // наш offer в полёте → have-local-offer
+    sendSignal.mockClear();
+
+    await pcm.handleOffer('b', { type: 'offer', sdp: 'theirs' });
+    // Наш offer победит — встречный игнорируем, answer не шлём.
+    expect(sendSignal.mock.calls.some(([type]) => type === 'answer')).toBe(false);
+  });
+
+  test('polite (не-initiator) принимает встречный offer и отвечает answer', async () => {
+    const { pcm, sendSignal } = makePCM({ selfId: 'z' }); // 'z' > 'a' → polite
+    pcm.addPeer('a');
+    await flush(); // наш offer в полёте → have-local-offer
+    sendSignal.mockClear();
+
+    await pcm.handleOffer('a', { type: 'offer', sdp: 'theirs' });
+    const [pc] = MockRTCPeerConnection.instances;
+    // Неявный rollback + приём чужого offer + answer.
+    expect(pc.remoteDescription).toEqual({ type: 'offer', sdp: 'theirs' });
+    expect(sendSignal).toHaveBeenCalledWith('answer', 'a', {
+      sdp: { type: 'answer', sdp: 'answer-sdp' },
+    });
   });
 });
 
@@ -377,28 +434,16 @@ describe('колбэки UI', () => {
   });
 });
 
-describe('тумблеры и закрытие', () => {
-  test('replaceVideoTrack меняет дорожку у video-sender каждого peer (тумблер камеры, §7.3)', async () => {
-    const { pcm } = makePCM();
-    pcm.addPeer('b');
-    const [pc] = MockRTCPeerConnection.instances;
-    const videoSender = pc.senders[1]; // [audio, video]
-
-    const newTrack = { kind: 'video' };
-    pcm.replaceVideoTrack(newTrack);
-    await flush();
-    expect(videoSender.replaceTrack).toHaveBeenCalledWith(newTrack);
-  });
-
-  test('включение камеры на прогретом sendrecv — только replaceTrack, без offer (US-6)', async () => {
-    // Вход без камеры: #attachLocalMedia уже завёл sendrecv video-трансивер. Тумблер
-    // камеры подменяет дорожку в нём через replaceTrack — БЕЗ renegotiation (нет
-    // offer, нет stop): это убирает гонки/glare, из-за которых плитка чернела.
+describe('тумблеры камеры и закрытие', () => {
+  test('первое включение камеры (recvonly): replaceTrack + переход в sendrecv + offer (US-6)', async () => {
+    // Вход без камеры → recvonly video-трансивер. Включение камеры ставит дорожку и
+    // переводит направление в sendrecv: это запускает renegotiation (offer), которая
+    // надёжно доставляет видео второй стороне (а не «холодный» replaceTrack).
     const localStream = fakeLocalStream({ video: false });
     const { pcm, sendSignal } = makePCM({ selfId: 'a', localStream });
     pcm.localStream = localStream;
     pcm.addPeer('b');
-    await flush();
+    await settle(pcm, 'b');
     sendSignal.mockClear();
 
     const [pc] = MockRTCPeerConnection.instances;
@@ -408,14 +453,32 @@ describe('тумблеры и закрытие', () => {
     await flush();
 
     expect(videoTx.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
-    expect(videoTx.stop).not.toHaveBeenCalled();
+    expect(videoTx.direction).toBe('sendrecv');
+    expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
+      sdp: { type: 'offer', sdp: 'offer-sdp' },
+    });
+  });
+
+  test('смена камеры при уже включённом видео — лёгкий replaceTrack без offer', async () => {
+    const { pcm, sendSignal } = makePCM({ selfId: 'a' }); // камера включена на входе
+    pcm.addPeer('b');
+    await settle(pcm, 'b');
+    sendSignal.mockClear();
+
+    const [pc] = MockRTCPeerConnection.instances;
+    const videoTx = pc.transceivers.find((t) => t.kind === 'video');
+    const newTrack = { kind: 'video' };
+    pcm.replaceVideoTrack(newTrack);
+    await flush();
+
+    expect(videoTx.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
     expect(sendSignal.mock.calls.some(([type]) => type === 'offer')).toBe(false);
   });
 
   test('выключение камеры — replaceTrack(null), без offer', async () => {
-    const { pcm, sendSignal } = makePCM({ selfId: 'a' }); // камера включена на входе
+    const { pcm, sendSignal } = makePCM({ selfId: 'a' });
     pcm.addPeer('b');
-    await flush();
+    await settle(pcm, 'b');
     sendSignal.mockClear();
 
     const [pc] = MockRTCPeerConnection.instances;

@@ -80,24 +80,37 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Создаёт соединение с участником и (если мы initiator) отправляет offer.
-   * Идемпотентна: повторный вызов для уже известного peer — no-op (защищает от
-   * гонки room:joined/room:peer-joined и встречного offer).
+   * Создаёт соединение с участником. Идемпотентна: повторный вызов для уже
+   * известного peer — no-op (защищает от гонки room:joined/room:peer-joined).
+   *
+   * Переговоры ведутся по схеме «perfect negotiation» (W3C): offer'ы порождает сам
+   * браузер через `onnegotiationneeded` — и на первичном входе, и при добавлении
+   * камеры в звонке (`addTrack`/смена direction). Glare разрешается ролью polite/
+   * impolite, привязанной к детерминированному правилу initiator (меньший socketId
+   * = impolite). Это надёжно доставляет видео обеим сторонам, в отличие от ручного
+   * offer + replaceTrack, где первое включение камеры могло не начать отправку и
+   * оставить чёрную плитку (US-5/US-6, §7.1).
    *
    * @param {string} socketId
-   * @param {{ initiator?: boolean }} [opts] переопределение роли (по умолчанию — по правилу).
    * @returns {RTCPeerConnection}
    */
-  addPeer(socketId, { initiator } = {}) {
+  addPeer(socketId) {
     const existing = this.peers.get(socketId);
     if (existing) {
       return existing.pc;
     }
 
     const pc = new RTCPeerConnection(this.rtcConfig);
-    const shouldOffer = initiator ?? this.isInitiator(socketId);
     const { audioSender, videoSender } = this.#attachLocalMedia(pc);
-    const record = { pc, audioSender, videoSender, pendingCandidates: [], remoteStream: null };
+    const record = {
+      pc,
+      audioSender,
+      videoSender,
+      pendingCandidates: [],
+      remoteStream: null,
+      // perfect negotiation: наш offer в полёте (для детекта glare в handleOffer).
+      makingOffer: false,
+    };
     this.peers.set(socketId, record);
 
     // Локальные ICE-кандидаты → удалённому участнику через relay сервера.
@@ -107,14 +120,23 @@ export class PeerConnectionManager {
       }
     };
 
-    // Удалённый поток → UI. Собираем СОБСТВЕННЫЙ поток участника и докладываем в
-    // него каждую входящую дорожку (`event.track`), а не полагаемся на
-    // `event.streams[0]` (msid): видеотрансивер, заведённый без дорожки (камера
-    // выключена на момент negotiation), может прийти БЕЗ msid — тогда позже
-    // включённая камера (replaceTrack без renegotiation) не попала бы в
-    // отображаемый поток и плитка осталась бы чёрной. Дорожка-приёмник приходит
-    // в ontrack уже на negotiation (sendrecv), кадры по ней начинают идти после
-    // replaceTrack — `<video>` с этим потоком их подхватывает.
+    // Браузер сам сигналит, что нужна (ре)negotiation: первичный обмен, добавление
+    // камеры в звонке (addTrack/смена direction трансивера). Создаём offer только
+    // из stable — иначе ждём, флаг negotiation-needed сохранится и событие
+    // повторится при возврате в stable (так очередь переговоров не теряется).
+    pc.onnegotiationneeded = async () => {
+      if (pc.signalingState !== 'stable') return;
+      try {
+        record.makingOffer = true;
+        await pc.setLocalDescription();
+        this.sendSignal('offer', socketId, { sdp: pc.localDescription });
+      } catch (err) {
+        console.error(`[pcm] negotiation failed for ${socketId}:`, err);
+      } finally {
+        record.makingOffer = false;
+      }
+    };
+
     pc.ontrack = () => {
       this.#scheduleStreamResync(socketId);
     };
@@ -137,38 +159,42 @@ export class PeerConnectionManager {
       }
     };
 
-    if (shouldOffer) {
-      // createOffer вызывается после добавления локальных дорожек/трансиверов,
-      // чтобы m-секции попали в SDP. Ошибки не пробрасываем — не валим приложение.
-      this.#makeOffer(socketId).catch((err) =>
-        console.error(`[pcm] makeOffer failed for ${socketId}:`, err),
-      );
-    }
-
     return pc;
   }
 
   /**
-   * Обрабатывает входящий offer: создаёт соединение при отсутствии (мы — не
-   * initiator), ставит remote description, отвечает answer.
+   * Обрабатывает входящий offer (perfect negotiation). При коллизии (у нас свой
+   * offer в полёте/не-stable) impolite-сторона (initiator, меньший socketId)
+   * игнорирует чужой offer — её offer побеждает; polite-сторона принимает чужой
+   * offer (современный `setRemoteDescription` неявно откатывает наш) и отвечает
+   * answer. Так ни один offer не теряется и видео доходит до обеих сторон.
    * @param {string} socketId
    * @param {RTCSessionDescriptionInit} sdp
    */
   async handleOffer(socketId, sdp) {
-    // Если pc ещё не создан (offer обогнал addPeer) — создаём как не-initiator.
+    // Если pc ещё не создан (offer обогнал addPeer) — создаём соединение.
     if (!this.peers.has(socketId)) {
-      this.addPeer(socketId, { initiator: false });
+      this.addPeer(socketId);
     }
     const record = this.peers.get(socketId);
     if (!record) return;
+    const { pc } = record;
+
+    const polite = !this.isInitiator(socketId);
+    const collision = record.makingOffer || (pc.signalingState && pc.signalingState !== 'stable');
+    if (collision && !polite) {
+      // impolite: игнорируем встречный offer — наш offer победит (glare).
+      return;
+    }
 
     try {
-      await record.pc.setRemoteDescription(sdp);
+      // polite при коллизии: SRD(offer) из have-local-offer неявно откатывает наш
+      // offer (rollback) и применяет чужой — отдельный rollback не нужен.
+      await pc.setRemoteDescription(sdp);
       await this.#flushCandidates(record);
-      const answer = await record.pc.createAnswer();
-      await record.pc.setLocalDescription(answer);
+      await pc.setLocalDescription();
       this.#scheduleStreamResync(socketId);
-      this.sendSignal('answer', socketId, { sdp: record.pc.localDescription });
+      this.sendSignal('answer', socketId, { sdp: pc.localDescription });
     } catch (err) {
       console.error(`[pcm] handleOffer failed for ${socketId}:`, err);
     }
@@ -233,19 +259,59 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Включает/выключает/меняет исходящую видеодорожку на всех соединениях ТОЛЬКО
-   * через `replaceTrack`, без renegotiation. Видеотрансивер уже «прогрет» как
-   * `sendrecv` на первичном negotiation (#attachLocalMedia), поэтому подмена
-   * дорожки сразу идёт по согласованной m=video: удалённый receiver размьючивается
-   * сам, как пойдут кадры. Это убирает источник «чёрной плитки» — гонки/потерю
-   * offer'а и glare при тумблере камеры в mesh (US-5/US-6, §7.3).
+   * Включает/выключает/меняет исходящую видеодорожку на всех соединениях.
+   *
+   * - `track`: первое включение камеры переводит recvonly-трансивер в sendrecv
+   *   (смена direction триггерит onnegotiationneeded → renegotiation), что надёжно
+   *   начинает отправку видео; далее смена устройства — лёгкий replaceTrack.
+   * - `null` (выключение): replaceTrack(null) — гасим кадры без renegotiation,
+   *   m-секция остаётся, удалённый receiver mute'ится (силуэт по media:state).
+   *
+   * Главное отличие от прежней схемы: первое видео доезжает через полноценный
+   * renegotiation, а не через replaceTrack на «холодном» m=video — это и убирало
+   * чёрную плитку у части участников (US-5/US-6, §7.1/§7.3).
    * @param {MediaStreamTrack | null} track
    */
   replaceVideoTrack(track) {
     for (const record of this.peers.values()) {
-      this.#ensureOutboundVideoSender(record)
-        .replaceTrack(track)
+      if (track) {
+        this.#enableOutboundVideo(record, track).catch((err) =>
+          console.error('[pcm] replaceVideoTrack failed:', err),
+        );
+        continue;
+      }
+      this.#findOutboundVideoSender(record)
+        ?.replaceTrack(null)
         .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
+    }
+  }
+
+  /**
+   * Включение/смена исходящего видео. Если трансивер уже согласован на отправку
+   * (currentDirection включает `send`) — лёгкий replaceTrack без renegotiation.
+   * Иначе (recvonly при входе с выключенной камерой) — ставим дорожку и переводим
+   * направление в sendrecv: смена direction вызывает onnegotiationneeded, браузер
+   * шлёт offer, и видео реально начинает отправляться второй стороне.
+   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
+   * @param {MediaStreamTrack} track
+   */
+  async #enableOutboundVideo(record, track) {
+    const tx = record.pc
+      .getTransceivers()
+      .find((t) => t.kind === 'video' && t.currentDirection !== 'stopped');
+
+    if (!tx) {
+      // Трансивера нет вовсе (нестандартно) — добавляем дорожку (запустит negotiation).
+      if (this.localStream) record.videoSender = record.pc.addTrack(track, this.localStream);
+      return;
+    }
+
+    await tx.sender.replaceTrack(track);
+    record.videoSender = tx.sender;
+    const negotiatedSending = String(tx.currentDirection ?? '').includes('send');
+    if (!negotiatedSending) {
+      // recvonly/inactive → sendrecv: триггерит onnegotiationneeded (renegotiation).
+      tx.direction = 'sendrecv';
     }
   }
 
@@ -315,44 +381,31 @@ export class PeerConnectionManager {
     if (videoTrack) {
       videoSender = pc.addTrack(videoTrack, stream);
     } else {
-      // sendrecv без дорожки: m=video в SDP с первого negotiation, позже replaceTrack
-      // без renegotiation (TDD §7.3, US-6). recvonly ломает unmute receiver у peer.
-      videoSender = pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+      // Камера выключена на входе: заводим recvonly video-трансивер — чтобы ПРИНИМАТЬ
+      // видео других. Включение своей камеры позже переведёт его в sendrecv (смена
+      // direction → onnegotiationneeded → renegotiation), что надёжно начинает
+      // отправку. recvonly здесь корректно: получение видео работает сразу (US-6).
+      videoSender = pc.addTransceiver('video', { direction: 'recvonly' }).sender;
     }
 
     return { audioSender, videoSender };
   }
 
   /**
-   * Исходящий video-sender (sendrecv / addTrack). @param record
+   * Исходящий video-sender (для выключения камеры — replaceTrack(null)).
+   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
    * @returns {RTCRtpSender | null}
    */
   #findOutboundVideoSender(record) {
     const videoTxs = record.pc.getTransceivers().filter((t) => {
       if (t.kind !== 'video') return false;
       const dir = t.direction ?? t.currentDirection ?? '';
-      return dir !== 'stopped' && dir !== 'inactive';
+      return dir !== 'stopped';
     });
     const withTrack = videoTxs.find((t) => t.sender.track);
     if (withTrack) return withTrack.sender;
-    const sendCapable = videoTxs.find((t) => String(t.direction ?? '').includes('send'));
-    if (sendCapable) return sendCapable.sender;
     if (videoTxs.length > 0) return videoTxs[videoTxs.length - 1].sender;
     return record.videoSender;
-  }
-
-  /**
-   * Гарантирует sendrecv video-sender; при входе без камеры уже создан в #attachLocalMedia.
-   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
-   * @returns {RTCRtpSender}
-   */
-  #ensureOutboundVideoSender(record) {
-    let outbound = this.#findOutboundVideoSender(record);
-    if (!outbound) {
-      outbound = record.pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
-    }
-    record.videoSender = outbound;
-    return outbound;
   }
 
   /**
@@ -474,25 +527,6 @@ export class PeerConnectionManager {
         this.#syncRemoteStreamTracks(socketId);
       };
     }
-  }
-
-  /**
-   * Создаёт и отправляет offer для соединения (мы — initiator). Вызывается только
-   * на первичном входе (mesh-пара). После входа медиа-тумблеры идут через
-   * replaceTrack без renegotiation, поэтому повторных offer'ов и glare нет.
-   * @param {string} socketId
-   */
-  async #makeOffer(socketId) {
-    const record = this.peers.get(socketId);
-    if (!record) return;
-    const { pc } = record;
-    if (pc.signalingState && pc.signalingState !== 'stable') {
-      console.warn(`[pcm] makeOffer skipped for ${socketId}: ${pc.signalingState}`);
-      return;
-    }
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    this.sendSignal('offer', socketId, { sdp: pc.localDescription });
   }
 
   /**

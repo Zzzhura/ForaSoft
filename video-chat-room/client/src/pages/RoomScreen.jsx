@@ -192,7 +192,9 @@ export default function RoomScreen() {
       );
       // До media:state — выключено (как у клиента по умолчанию, PRD п. 13 отклонён).
       setRemoteMediaState((prev) =>
-        prev[socketId] ? prev : { ...prev, [socketId]: { audioEnabled: false, videoEnabled: false } },
+        prev[socketId]
+          ? prev
+          : { ...prev, [socketId]: { audioEnabled: false, videoEnabled: false } },
       );
       pcmRef.current?.addPeer(socketId);
       pcmRef.current?.refreshPeerStream(socketId);
