@@ -233,6 +233,22 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
     [],
   );
 
+  // Терминальные экраны (ошибка сервера / комната заполнена): звонок невозможен —
+  // закрываем mesh и физически освобождаем камеру/микрофон, чтобы на экране-заглушке
+  // не горел индикатор камеры. Иначе устройства остаются захваченными вплоть до
+  // размонтирования. Зависим и от `localStream`: если устройства захватились уже
+  // после ошибки, освобождаем их сразу. При следующем заходе getUserMedia
+  // запросит доступ заново (нативный prompt на каждом входе).
+  useEffect(() => {
+    if (!serverError && !roomFull) return;
+    pcmRef.current?.closeAll();
+    pcmRef.current = null;
+    localStream?.getTracks().forEach((track) => {
+      track.onended = null;
+      track.stop();
+    });
+  }, [serverError, roomFull, localStream]);
+
   const handleLeave = () => {
     pcmRef.current?.closeAll();
     pcmRef.current = null;
