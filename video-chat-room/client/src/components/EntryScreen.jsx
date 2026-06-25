@@ -63,7 +63,7 @@ export default function EntryScreen({
           {!withPreview && (
             <img
               className="start__logo"
-              src="/forasoft-logo.svg"
+              src="/icon.svg"
               alt="Fora Soft"
               width="48"
               height="48"
