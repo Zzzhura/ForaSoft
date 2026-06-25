@@ -319,6 +319,7 @@ export default function RoomScreen() {
             videoEnabled={videoEnabled}
             onToggleAudio={handleToggleAudio}
             onToggleVideo={handleToggleVideo}
+            ready={ready}
           />
         }
       />
@@ -353,9 +354,7 @@ export default function RoomScreen() {
   // вход `selfId` не получает, поэтому проверки `roomFull`/`serverError` выше
   // перехватывают терминальные состояния раньше этого гейта.
   if (!selfId) {
-    return (
-      <NoticeScreen title="Подключение к комнате" text="Устанавливаем соединение…" />
-    );
+    return <NoticeScreen title="Подключение к комнате" text="Устанавливаем соединение…" />;
   }
 
   // self-view — первой плиткой (PRD F-07); удалённые участники следом. Состояние

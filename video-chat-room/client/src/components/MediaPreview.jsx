@@ -8,6 +8,8 @@ import DeviceToggles from './DeviceToggles.jsx';
  * @property {boolean} videoEnabled - камера включена.
  * @property {() => void} onToggleAudio - тумблер микрофона.
  * @property {() => void} onToggleVideo - тумблер камеры.
+ * @property {boolean} [ready] - захват устройств завершён; до этого кнопки
+ *           устройств заблокированы (наличие микрофона/камеры ещё неизвестно).
  */
 
 /**
@@ -25,6 +27,7 @@ export default function MediaPreview({
   videoEnabled,
   onToggleAudio,
   onToggleVideo,
+  ready = true,
 }) {
   const videoRef = useRef(null);
 
@@ -72,6 +75,7 @@ export default function MediaPreview({
           videoEnabled={videoEnabled}
           onToggleAudio={onToggleAudio}
           onToggleVideo={onToggleVideo}
+          disabled={!ready}
         />
       </div>
     </div>

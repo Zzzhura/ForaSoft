@@ -6,6 +6,9 @@ import { MicIcon, MicOffIcon, CamIcon, CamOffIcon } from './MediaIcons.jsx';
  * @property {boolean} videoEnabled - камера включена.
  * @property {() => void} onToggleAudio - тумблер микрофона.
  * @property {() => void} onToggleVideo - тумблер камеры.
+ * @property {boolean} [disabled] - блокирует кнопки, пока захват устройств не
+ *           завершён (`ready`): до этого `hasMic`/`hasCam` ещё неизвестны и клик
+ *           ушёл бы в no-op (гонка на форме входа).
  */
 
 /**
@@ -22,6 +25,7 @@ export default function DeviceToggles({
   videoEnabled,
   onToggleAudio,
   onToggleVideo,
+  disabled = false,
 }) {
   return (
     <div className="device-toggles">
@@ -29,6 +33,7 @@ export default function DeviceToggles({
         type="button"
         className={`ctrl-btn${audioEnabled ? '' : ' ctrl-btn--off'}`}
         onClick={onToggleAudio}
+        disabled={disabled}
         aria-pressed={audioEnabled}
         aria-label={audioEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
         title={audioEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
@@ -40,6 +45,7 @@ export default function DeviceToggles({
         type="button"
         className={`ctrl-btn${videoEnabled ? '' : ' ctrl-btn--off'}`}
         onClick={onToggleVideo}
+        disabled={disabled}
         aria-pressed={videoEnabled}
         aria-label={videoEnabled ? 'Выключить камеру' : 'Включить камеру'}
         title={videoEnabled ? 'Выключить камеру' : 'Включить камеру'}
