@@ -390,24 +390,41 @@ describe('тумблеры и закрытие', () => {
     expect(videoSender.replaceTrack).toHaveBeenCalledWith(newTrack);
   });
 
-  test('replaceVideoTrack на пустом sendrecv — addTrack и offer (US-6)', async () => {
+  test('включение камеры на прогретом sendrecv — только replaceTrack, без offer (US-6)', async () => {
+    // Вход без камеры: #attachLocalMedia уже завёл sendrecv video-трансивер. Тумблер
+    // камеры подменяет дорожку в нём через replaceTrack — БЕЗ renegotiation (нет
+    // offer, нет stop): это убирает гонки/glare, из-за которых плитка чернела.
     const localStream = fakeLocalStream({ video: false });
-    const { pcm, sendSignal } = makePCM({ localStream: fakeLocalStream({ video: false }) });
+    const { pcm, sendSignal } = makePCM({ selfId: 'a', localStream });
     pcm.localStream = localStream;
     pcm.addPeer('b');
     await flush();
     sendSignal.mockClear();
 
+    const [pc] = MockRTCPeerConnection.instances;
+    const videoTx = pc.transceivers.find((t) => t.kind === 'video');
     const newTrack = { kind: 'video' };
     pcm.replaceVideoTrack(newTrack);
     await flush();
+
+    expect(videoTx.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(videoTx.stop).not.toHaveBeenCalled();
+    expect(sendSignal.mock.calls.some(([type]) => type === 'offer')).toBe(false);
+  });
+
+  test('выключение камеры — replaceTrack(null), без offer', async () => {
+    const { pcm, sendSignal } = makePCM({ selfId: 'a' }); // камера включена на входе
+    pcm.addPeer('b');
     await flush();
+    sendSignal.mockClear();
 
     const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers[0].stop).toHaveBeenCalled();
-    expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
-      sdp: { type: 'offer', sdp: 'offer-sdp' },
-    });
+    const videoSender = pc.senders[1]; // [audio, video]
+    pcm.replaceVideoTrack(null);
+    await flush();
+
+    expect(videoSender.replaceTrack).toHaveBeenCalledWith(null);
+    expect(sendSignal.mock.calls.some(([type]) => type === 'offer')).toBe(false);
   });
 
   test('setAudioEnabled переключает enabled общей аудиодорожки (mute, §7.3)', () => {

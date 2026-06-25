@@ -233,51 +233,20 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Заменяет исходящую видеодорожку на всех соединениях. Пустой sendrecv-трансивер
-   * (#attachLocalMedia) заменяем на addTrack + renegotiation — replaceTrack на
-   * «пустой» m=video не размутит receiver у peer (US-6).
+   * Включает/выключает/меняет исходящую видеодорожку на всех соединениях ТОЛЬКО
+   * через `replaceTrack`, без renegotiation. Видеотрансивер уже «прогрет» как
+   * `sendrecv` на первичном negotiation (#attachLocalMedia), поэтому подмена
+   * дорожки сразу идёт по согласованной m=video: удалённый receiver размьючивается
+   * сам, как пойдут кадры. Это убирает источник «чёрной плитки» — гонки/потерю
+   * offer'а и glare при тумблере камеры в mesh (US-5/US-6, §7.3).
    * @param {MediaStreamTrack | null} track
    */
   replaceVideoTrack(track) {
-    for (const [socketId, record] of this.peers) {
-      if (track) {
-        this.#enableOutboundVideo(socketId, record, track)
-          .then(() => this.#scheduleStreamResync(socketId))
-          .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
-        continue;
-      }
-      this.#findOutboundVideoSender(record)
-        ?.replaceTrack(null)
+    for (const record of this.peers.values()) {
+      this.#ensureOutboundVideoSender(record)
+        .replaceTrack(track)
         .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
     }
-  }
-
-  /**
-   * Первое исходящее видео: addTrack + offer; далее — replaceTrack без renegotiation.
-   * @param {string} socketId
-   * @param {{ pc: RTCPeerConnection, videoSender: RTCRtpSender | null }} record
-   * @param {MediaStreamTrack} track
-   */
-  async #enableOutboundVideo(socketId, record, track) {
-    const stream = this.localStream;
-    const outbound = this.#findOutboundVideoSender(record);
-    if (outbound?.track) {
-      await outbound.replaceTrack(track);
-      return;
-    }
-
-    const emptyTx = record.pc
-      .getTransceivers()
-      .find((t) => t.kind === 'video' && !t.sender.track);
-    if (emptyTx && stream) {
-      emptyTx.stop();
-      record.videoSender = record.pc.addTrack(track, stream);
-      await this.#makeOffer(socketId);
-      return;
-    }
-
-    const sender = this.#ensureOutboundVideoSender(record);
-    await sender.replaceTrack(track);
   }
 
   /**
@@ -508,7 +477,9 @@ export class PeerConnectionManager {
   }
 
   /**
-   * Создаёт и отправляет offer для соединения (мы — initiator).
+   * Создаёт и отправляет offer для соединения (мы — initiator). Вызывается только
+   * на первичном входе (mesh-пара). После входа медиа-тумблеры идут через
+   * replaceTrack без renegotiation, поэтому повторных offer'ов и glare нет.
    * @param {string} socketId
    */
   async #makeOffer(socketId) {
