@@ -13,9 +13,9 @@ import { MicIcon, MicOffIcon, CamIcon, CamOffIcon } from './MediaIcons.jsx';
 
 /**
  * Кнопки управления устройствами (микрофон/камера) для превью на экране входа
- * (`MediaPreview`). Камера и микрофон выключены по умолчанию. Кнопки маленькие и
- * круглые (стиль `.device-toggles`); выбор устройства ввода здесь не нужен — он
- * доступен уже в звонке (`Controls`).
+ * (`MediaPreview`). Камера и микрофон включены по умолчанию (PRD п. 13). Кнопки
+ * маленькие и круглые (стиль `.device-toggles`); выбор устройства ввода здесь не
+ * нужен — он доступен уже в звонке (`Controls`).
  *
  * @param {DeviceTogglesProps} props
  * @returns {JSX.Element}

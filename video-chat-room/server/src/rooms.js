@@ -70,9 +70,9 @@ export class RoomRegistry {
     if (room.members.size >= this.maxMembers) {
       return { ok: false, reason: 'full' };
     }
-    // Клиент по умолчанию выключает камеру/микрофон (отклонение PRD п. 13); реальное
-    // состояние приходит в media:state сразу после входа. false здесь — без чёрных
-    // плиток до первого media:state (US-12).
+    // Консервативный плейсхолдер до первого media:state (приходит сразу после входа
+    // и сообщает реальное состояние устройств). false здесь — чтобы не мигнуть чёрной
+    // плиткой/ложными индикаторами, пока не доехал трек и media:state (US-12).
     room.members.set(member.socketId, {
       socketId: member.socketId,
       name: member.name,

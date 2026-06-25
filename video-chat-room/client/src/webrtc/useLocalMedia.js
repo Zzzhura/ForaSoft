@@ -6,13 +6,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * Запрашивает камеру и микрофон через `getUserMedia` при монтировании (нативный
  * prompt на каждом входе) и держит состояние устройств. Камера и микрофон
- * ВЫКЛЮЧЕНЫ по умолчанию у каждого нового участника: микрофон глушим
- * (`enabled=false`), видеодорожку сразу освобождаем (`stop()`+`removeTrack`,
- * лампочка не горит). Доступ запрашиваем только чтобы показать prompt и узнать
- * наличие устройств — включает их пользователь тумблерами. Если
- * устройства физически нет или в доступе отказано — пользователь всё равно
- * остаётся в комнате с выключенными устройствами (п. 14/33, US-12), приложение
- * не «вылетает».
+ * ВКЛЮЧЕНЫ по умолчанию у каждого нового участника (PRD п. 13): аудиодорожка
+ * активна (`enabled=true`), видеодорожка держится в потоке и отдаётся в mesh
+ * (лампочка горит). Если устройства физически нет или в доступе отказано —
+ * пользователь всё равно остаётся в комнате, а соответствующее устройство
+ * выключено (п. 14/33, US-12), приложение не «вылетает».
  *
  * Тумблеры (задача 12, TDD §7.3):
  *  - `toggleAudio` — `audioTrack.enabled = !enabled` (мгновенно, без
@@ -71,8 +69,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  */
 export function useLocalMedia({ onVideoTrackChanged, onAudioTrackChanged } = {}) {
   const [localStream, setLocalStream] = useState(null);
-  // Выключены по умолчанию у каждого нового участника, даже с тем же устройством:
-  // включает пользователь тумблерами.
+  // Включены по умолчанию (PRD п. 13); итоговое значение выставляется после захвата
+  // по наличию устройства. Отсутствующее/недоступное устройство остаётся выключенным
+  // (п. 14/33) — старт с false корректен и для случая отказа в доступе.
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [videoEnabled, setVideoEnabled] = useState(false);
   const [hasMic, setHasMic] = useState(false);
@@ -151,33 +150,31 @@ export function useLocalMedia({ onVideoTrackChanged, onAudioTrackChanged } = {})
         stream = result.stream;
         const audioTrack = stream.getAudioTracks()[0] ?? null;
         const videoTrack = stream.getVideoTracks()[0] ?? null;
-        // Микрофон выключен по умолчанию: дорожку держим (для мгновенного unmute
-        // без renegotiation), но глушим. Реакция на потерю устройства — onended.
+        // Микрофон включён по умолчанию (PRD п. 13): дорожку держим активной.
+        // Реакция на потерю устройства — onended.
         if (audioTrack) {
-          audioTrack.enabled = false;
+          audioTrack.enabled = true;
           audioTrack.onended = handleAudioEnded;
         }
-        // Запоминаем выбранные устройства (для меню и повторного захвата) до того,
-        // как отпустим видеодорожку.
+        // Запоминаем выбранные устройства (для меню и повторного захвата).
         const audioId = trackDeviceId(audioTrack);
         const videoId = trackDeviceId(videoTrack);
         preferredAudioIdRef.current = audioId;
         preferredVideoIdRef.current = videoId;
         setCurrentAudioId(audioId);
         setCurrentVideoId(videoId);
-        // Камера выключена по умолчанию: физически отпускаем устройство, чтобы
-        // лампочка не горела (stop + removeTrack). При включении тумблером
-        // дорожка захватывается заново через getUserMedia (toggleVideo).
+        // Камера включена по умолчанию (PRD п. 13): дорожку держим в потоке и она
+        // уходит в mesh при входе (лампочка горит). Выключение тумблером позже
+        // физически освободит устройство (toggleVideo: stop + removeTrack, п. 19).
         if (videoTrack) {
-          videoTrack.stop();
-          stream.removeTrack(videoTrack);
+          videoTrack.onended = () => handleVideoEnded(videoTrack);
         }
         localStreamRef.current = stream;
         setLocalStream(stream);
         setHasMic(!!audioTrack);
         setHasCam(!!videoTrack);
-        setAudioEnabled(false);
-        setVideoEnabled(false);
+        setAudioEnabled(!!audioTrack);
+        setVideoEnabled(!!videoTrack);
       }
       // Перечисляем устройства: метки доступны только после выдачи доступа.
       refreshDevices(setAudioDevices, setVideoDevices, setOutputDevices);

@@ -190,7 +190,9 @@ export default function RoomScreen() {
       setRemoteMembers((prev) =>
         prev.some((m) => m.socketId === socketId) ? prev : [...prev, { socketId, name: peerName }],
       );
-      // До media:state — выключено (как у клиента по умолчанию, PRD п. 13 отклонён).
+      // До media:state считаем выключенным — консервативный плейсхолдер, чтобы не
+      // мигнуть «чёрной» плиткой, пока не доехал трек и реальное состояние (media:state
+      // приходит сразу после входа и уточнит флаги).
       setRemoteMediaState((prev) =>
         prev[socketId]
           ? prev

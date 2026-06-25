@@ -36,8 +36,8 @@ async function joinByLink(page, url, userName) {
 
 /**
  * Форма входа в комнату: ввод имени + управление устройствами прямо в форме.
- * Камера и микрофон выключены по умолчанию — включаем камеру (чтобы тесты видели
- * видеопотоки) и входим по кнопке «Войти».
+ * Камера и микрофон ВКЛЮЧЕНЫ по умолчанию (PRD п. 13). Для сценариев «без камеры»
+ * (`camera: false`) выключаем её до входа; иначе дожидаемся готовности камеры.
  * @param {import('@playwright/test').Page} page
  * @param {string} userName
  * @param {{ camera?: boolean }} [opts]
@@ -45,8 +45,10 @@ async function joinByLink(page, url, userName) {
 async function enterName(page, userName, { camera = true } = {}) {
   await page.getByPlaceholder('Введите ваше имя').fill(userName);
   if (camera) {
-    await page.getByRole('button', { name: 'Включить камеру' }).click();
     await expect(page.getByRole('button', { name: 'Выключить камеру' })).toBeVisible();
+  } else {
+    await page.getByRole('button', { name: 'Выключить камеру' }).click();
+    await expect(page.getByRole('button', { name: 'Включить камеру' })).toBeVisible();
   }
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
 }
@@ -91,16 +93,17 @@ test.describe('Видеочат-комната E2E', () => {
     await alice.page.goto('/');
     await alice.page.getByPlaceholder('Введите название комнаты').fill(ROOM_NAME);
     await alice.page.getByRole('button', { name: 'Создать комнату' }).click();
-    await enterName(alice.page, 'Алиса', false);
+    await enterName(alice.page, 'Алиса', { camera: false });
     const url = alice.page.url();
 
     const bob = await newParticipant(browser);
     await bob.page.goto(url);
-    await enterName(bob.page, 'Боб', true);
+    await enterName(bob.page, 'Боб', { camera: true });
 
     // Алиса (камера off) должна видеть видео Боба (камера on).
     await expectVideoPlaying(alice.page.locator('.tile__video:not(.tile__video--self)').first());
-    await expect(alice.page.getByLabel('Камера выключена')).toHaveCount(0);
+    // Индикатор «камера выключена» — только на своей плитке Алисы; у Боба камера on.
+    await expect(alice.page.getByLabel('Камера выключена')).toHaveCount(1);
 
     await alice.context.close();
     await bob.context.close();
@@ -162,16 +165,16 @@ test.describe('Видеочат-комната E2E', () => {
     const alice = await newParticipant(browser);
     await createRoom(alice.page, 'Алиса');
 
-    // Микрофон выключен по умолчанию → индикатор виден сразу (PRD п. 16).
-    await expect(alice.page.getByLabel('Микрофон выключен')).toBeVisible();
-
-    // Включаем микрофон — индикатор исчезает.
-    await alice.page.getByRole('button', { name: 'Включить микрофон' }).click();
+    // Микрофон включён по умолчанию (PRD п. 13) → индикатора нет.
     await expect(alice.page.getByLabel('Микрофон выключен')).toHaveCount(0);
 
-    // Снова выключаем — индикатор возвращается.
+    // Выключаем микрофон — индикатор появляется (PRD п. 16).
     await alice.page.getByRole('button', { name: 'Выключить микрофон' }).click();
     await expect(alice.page.getByLabel('Микрофон выключен')).toBeVisible();
+
+    // Снова включаем — индикатор исчезает.
+    await alice.page.getByRole('button', { name: 'Включить микрофон' }).click();
+    await expect(alice.page.getByLabel('Микрофон выключен')).toHaveCount(0);
 
     await alice.context.close();
   });

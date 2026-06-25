@@ -22,13 +22,13 @@
 | A. Каркас | 1–2 | ✅ |
 | B. Сервер: комнаты | 3–6 | ✅ |
 | C. Сигналинг и чат | 7–8 | ✅ |
-| D. WebRTC mesh | 9–12 | ✅ (см. отклонение PRD п. 13 в задаче 9) |
+| D. WebRTC mesh | 9–12 | ✅ |
 | E. UI | 13–18 | ✅ |
 | F. Ошибки | 19–20 | ✅ |
 | G. Тесты | 21–24 | ✅ |
 | H. Деплой | 25–26 | ✅ |
 
-**Покрытие PRD:** Must-требования закрыты, кроме **п. 13** (устройства off by default — осознанное UX-решение).
+**Покрытие PRD:** Must-требования закрыты (включая **п. 13** — камера и микрофон включены по умолчанию).
 
 **E2E (задача 24):** US-4, US-5, US-6, US-7, US-8, US-10, US-11 — автоматизированы в `e2e/video-chat.spec.js`.
 
@@ -99,7 +99,7 @@
 - [x] 9. `useLocalMedia` — локальные устройства (`webrtc/useLocalMedia.js`)
   - `getUserMedia` (audio+video), состояние `hasMic/hasCam`, обработка reject/notfound/unsupported; устройства включены по умолчанию.
   - _Requirements: F-06, п. 13,14,33 PRD, US-6, US-12; Design: §4.4, §8_
-  - _Отклонение PRD п. 13: камера и микрофон **выключены** по умолчанию (opt-in тумблерами на форме входа; лампочка камеры не горит)._
+  - _PRD п. 13: камера и микрофон **включены** по умолчанию (дорожки активны, лампочка камеры горит); отсутствующие/недоступные устройства остаются выключенными (п. 14/33)._
   - _Тесты: `client/src/webrtc/useLocalMedia.test.js`._
 
 - [x] 10. `PeerConnectionManager` — набор `RTCPeerConnection` (`webrtc/PeerConnectionManager.js`)
@@ -242,5 +242,5 @@
 | F-16 | `ParticipantList.jsx` + видеоплитки, `RoomScreen` |
 | F-17, F-18 | `Controls`, `roomHandlers` (leave/disconnect) |
 | US-1…US-13 | E2E + unit/integration (см. `e2e/video-chat.spec.js`) |
-| п. 13 PRD | ⚠️ устройства off by default (`useLocalMedia`) |
+| п. 13 PRD | ✅ устройства on by default (`useLocalMedia`) |
 | п. 38, 39 | `validation.js`, `client/src/lib/name.js` |

@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe('захват по умолчанию', () => {
-  test('микрофон и камера ВЫКЛЮЧЕНЫ по умолчанию, но устройства доступны', async () => {
+  test('микрофон и камера ВКЛЮЧЕНЫ по умолчанию при наличии устройств (PRD п. 13)', async () => {
     const audioTrack = makeTrack('audio');
     const videoTrack = makeTrack('video');
     setGetUserMedia(vi.fn().mockResolvedValue(streamWith([audioTrack, videoTrack])));
@@ -71,17 +71,16 @@ describe('захват по умолчанию', () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     expect(result.current.error).toBeNull();
-    // Устройства физически есть → тумблеры активны.
     expect(result.current.hasMic).toBe(true);
     expect(result.current.hasCam).toBe(true);
-    // Но по умолчанию выключены у каждого нового участника.
-    expect(result.current.audioEnabled).toBe(false);
-    expect(result.current.videoEnabled).toBe(false);
-    // Микрофон заглушён (дорожку держим), камера освобождена (stop + removeTrack).
-    expect(audioTrack.enabled).toBe(false);
+    // Включены по умолчанию (PRD п. 13).
+    expect(result.current.audioEnabled).toBe(true);
+    expect(result.current.videoEnabled).toBe(true);
+    // Дорожки активны и держатся в потоке (ничего не глушим и не останавливаем).
+    expect(audioTrack.enabled).toBe(true);
     expect(audioTrack.stop).not.toHaveBeenCalled();
-    expect(videoTrack.stop).toHaveBeenCalled();
-    expect(result.current.localStream.getVideoTracks()).toHaveLength(0);
+    expect(videoTrack.stop).not.toHaveBeenCalled();
+    expect(result.current.localStream.getVideoTracks()).toHaveLength(1);
   });
 });
 
@@ -96,24 +95,51 @@ describe('тумблер микрофона (12.1, п. 16, US-7)', () => {
 
     const audioTrack = result.current.localStream.getAudioTracks()[0];
 
-    // Стартуем с выключенного микрофона → первый тумблер включает.
-    act(() => result.current.toggleAudio());
-    expect(result.current.audioEnabled).toBe(true);
-    expect(audioTrack.enabled).toBe(true);
-    expect(audioTrack.stop).not.toHaveBeenCalled();
-
+    // Стартуем со ВКЛЮЧЕННОГО микрофона (PRD п. 13) → первый тумблер выключает.
     act(() => result.current.toggleAudio());
     expect(result.current.audioEnabled).toBe(false);
     expect(audioTrack.enabled).toBe(false);
+    expect(audioTrack.stop).not.toHaveBeenCalled();
+
+    act(() => result.current.toggleAudio());
+    expect(result.current.audioEnabled).toBe(true);
+    expect(audioTrack.enabled).toBe(true);
   });
 });
 
 describe('тумблер камеры (12.2, п. 19, US-7)', () => {
-  test('включение захватывает дорожку и отдаёт её в mesh', async () => {
+  test('выключение останавливает дорожку (лампочка гаснет) и снимает её с mesh', async () => {
+    const initialVideo = makeTrack('video');
+    const getUserMedia = vi.fn(async (constraints) => {
+      if (constraints.audio && constraints.video) {
+        return streamWith([makeTrack('audio'), initialVideo]);
+      }
+      return streamWith([]);
+    });
+    setGetUserMedia(getUserMedia);
+    const onVideoTrackChanged = vi.fn();
+
+    const { result } = renderHook(() => useLocalMedia({ onVideoTrackChanged }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    // Камера включена по умолчанию (PRD п. 13) → тумблер выключает.
+    expect(result.current.videoEnabled).toBe(true);
+    await act(async () => {
+      await result.current.toggleVideo();
+    });
+
+    expect(initialVideo.stop).toHaveBeenCalled();
+    expect(result.current.videoEnabled).toBe(false);
+    expect(onVideoTrackChanged).toHaveBeenLastCalledWith(null);
+    expect(result.current.localStream.getVideoTracks()).toHaveLength(0);
+  });
+
+  test('повторное включение захватывает свежую дорожку и отдаёт её в mesh', async () => {
+    const initialVideo = makeTrack('video');
     const freshVideo = makeTrack('video');
     const getUserMedia = vi.fn(async (constraints) => {
       if (constraints.audio && constraints.video) {
-        return streamWith([makeTrack('audio'), makeTrack('video')]);
+        return streamWith([makeTrack('audio'), initialVideo]);
       }
       if (constraints.video) return streamWith([freshVideo]);
       return streamWith([]);
@@ -124,7 +150,10 @@ describe('тумблер камеры (12.2, п. 19, US-7)', () => {
     const { result } = renderHook(() => useLocalMedia({ onVideoTrackChanged }));
     await waitFor(() => expect(result.current.ready).toBe(true));
 
-    // Камера выключена по умолчанию → тумблер включает (захват заново).
+    // Выключаем (camera on по умолчанию), затем включаем заново — захват свежей дорожки.
+    await act(async () => {
+      await result.current.toggleVideo();
+    });
     await act(async () => {
       await result.current.toggleVideo();
     });
@@ -133,34 +162,6 @@ describe('тумблер камеры (12.2, п. 19, US-7)', () => {
     expect(result.current.hasCam).toBe(true);
     expect(onVideoTrackChanged).toHaveBeenLastCalledWith(freshVideo);
     expect(result.current.localStream.getVideoTracks()).toHaveLength(1);
-  });
-
-  test('выключение останавливает дорожку и снимает её с mesh', async () => {
-    const freshVideo = makeTrack('video');
-    const getUserMedia = vi.fn(async (constraints) => {
-      if (constraints.audio && constraints.video) {
-        return streamWith([makeTrack('audio'), makeTrack('video')]);
-      }
-      if (constraints.video) return streamWith([freshVideo]);
-      return streamWith([]);
-    });
-    setGetUserMedia(getUserMedia);
-    const onVideoTrackChanged = vi.fn();
-
-    const { result } = renderHook(() => useLocalMedia({ onVideoTrackChanged }));
-    await waitFor(() => expect(result.current.ready).toBe(true));
-
-    await act(async () => {
-      await result.current.toggleVideo(); // включаем
-    });
-    await act(async () => {
-      await result.current.toggleVideo(); // выключаем
-    });
-
-    expect(freshVideo.stop).toHaveBeenCalled();
-    expect(result.current.videoEnabled).toBe(false);
-    expect(onVideoTrackChanged).toHaveBeenLastCalledWith(null);
-    expect(result.current.localStream.getVideoTracks()).toHaveLength(0);
   });
 });
 
@@ -199,8 +200,8 @@ describe('обработка отказов (US-12)', () => {
 
     expect(result.current.hasMic).toBe(true);
     expect(result.current.hasCam).toBe(false);
-    // Микрофон по умолчанию выключен (включает пользователь тумблером).
-    expect(result.current.audioEnabled).toBe(false);
+    // Микрофон включён по умолчанию (PRD п. 13); отсутствующая камера — выключена (п. 14).
+    expect(result.current.audioEnabled).toBe(true);
     expect(result.current.videoEnabled).toBe(false);
   });
 });
