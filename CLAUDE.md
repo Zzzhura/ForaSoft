@@ -44,5 +44,5 @@
 
 ## Socket-контракт
 
-- C→S: `room:join {roomId,name}`, `room:leave`, `chat:send {text}`, `signal:offer|answer|ice {to,...}`.
-- S→C: `room:joined {selfId,members,history}`, `room:full`, `room:peer-joined`, `room:peer-left`, `chat:message`, `signal:* {from,...}`, `server:error {code,message}`.
+- C→S: `room:join {roomId,name}`, `room:leave`, `chat:send {text}`, `signal:offer|answer|ice {to,...}`, `media:state {audioEnabled,videoEnabled}`.
+- S→C: `room:joined {selfId,members,history}` (member = `{socketId,name,audioEnabled,videoEnabled}`), `room:full`, `room:peer-joined`, `room:peer-left`, `chat:message`, `signal:* {from,...}`, `media:state {from,audioEnabled,videoEnabled}`, `server:error {code,message}`.

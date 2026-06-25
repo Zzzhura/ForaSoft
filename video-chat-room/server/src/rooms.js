@@ -4,6 +4,8 @@ import { config } from './config.js';
  * @typedef {Object} Member
  * @property {string} socketId  Внутренний ID участника (socket.id), не показывается в UI.
  * @property {string} name      Отображаемое имя (может повторяться внутри комнаты).
+ * @property {boolean} audioEnabled  Микрофон включён (для индикаторов у остальных, US-7).
+ * @property {boolean} videoEnabled  Камера включена (для заглушки-силуэта у остальных, US-12).
  */
 
 /**
@@ -68,7 +70,14 @@ export class RoomRegistry {
     if (room.members.size >= this.maxMembers) {
       return { ok: false, reason: 'full' };
     }
-    room.members.set(member.socketId, { socketId: member.socketId, name: member.name });
+    // Камера и микрофон по умолчанию включены (PRD п. 13); клиент уточнит реальное
+    // состояние сразу после входа событием media:state (например, вход без устройств).
+    room.members.set(member.socketId, {
+      socketId: member.socketId,
+      name: member.name,
+      audioEnabled: true,
+      videoEnabled: true,
+    });
     // --- Конец критической секции. ---
 
     return { ok: true, members: this.#snapshotMembers(room), title: room.title };
@@ -96,6 +105,26 @@ export class RoomRegistry {
     }
 
     return { roomDeleted: false, members: this.#snapshotMembers(room) };
+  }
+
+  /**
+   * Обновляет состояние медиа участника (микрофон/камера). Источник истины для
+   * поздних участников: их `room:joined` отдаёт уже актуальные флаги (US-7/US-12).
+   * Для несуществующей комнаты/участника — безопасный no-op.
+   *
+   * @param {string} roomId
+   * @param {string} socketId
+   * @param {{ audioEnabled: boolean, videoEnabled: boolean }} state
+   * @returns {boolean} true, если состояние обновлено.
+   */
+  setMediaState(roomId, socketId, state) {
+    const member = this.rooms.get(roomId)?.members.get(socketId);
+    if (!member) {
+      return false;
+    }
+    member.audioEnabled = Boolean(state.audioEnabled);
+    member.videoEnabled = Boolean(state.videoEnabled);
+    return true;
   }
 
   /**
@@ -163,7 +192,12 @@ export class RoomRegistry {
    * @returns {Member[]} Свежий массив-копия участников (чтобы внешний код не мутировал Map).
    */
   #snapshotMembers(room) {
-    return [...room.members.values()].map((m) => ({ socketId: m.socketId, name: m.name }));
+    return [...room.members.values()].map((m) => ({
+      socketId: m.socketId,
+      name: m.name,
+      audioEnabled: m.audioEnabled,
+      videoEnabled: m.videoEnabled,
+    }));
   }
 }
 

@@ -72,6 +72,8 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
   const [remoteMembers, setRemoteMembers] = useState([]);
   /** @type {[Record<string, MediaStream>, Function]} */
   const [remoteStreams, setRemoteStreams] = useState({});
+  /** @type {[Record<string, {audioEnabled:boolean,videoEnabled:boolean}>, Function]} Состояние медиа удалённых по socketId (US-7/US-12). */
+  const [remoteMediaState, setRemoteMediaState] = useState({});
   /** @type {[Record<string, RTCPeerConnectionState>, Function]} Состояние P2P по socketId (задача 20). */
   const [peerStates, setPeerStates] = useState({});
   const [messages, setMessages] = useState([]);
@@ -126,6 +128,16 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
     onJoined: ({ selfId: id, members, history, title }) => {
       setSelfId(id);
       setRemoteMembers(members);
+      // Текущее состояние микрофона/камеры уже присутствующих участников (источник
+      // истины — сервер), чтобы сразу показать их индикаторы/заглушку (US-7/US-12).
+      setRemoteMediaState(
+        Object.fromEntries(
+          members.map((m) => [
+            m.socketId,
+            { audioEnabled: m.audioEnabled ?? true, videoEnabled: m.videoEnabled ?? true },
+          ]),
+        ),
+      );
       setMessages(history);
       // Название комнаты от сервера (создателя); пустое не затираем — UI покажет id.
       if (title) setRoomTitle(title);
@@ -143,6 +155,12 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
             return next;
           });
           setPeerStates((prev) => {
+            if (!(sid in prev)) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
+          setRemoteMediaState((prev) => {
             if (!(sid in prev)) return prev;
             const next = { ...prev };
             delete next[sid];
@@ -171,6 +189,10 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
       pcmRef.current?.removePeer(socketId);
       setRemoteMembers((prev) => prev.filter((m) => m.socketId !== socketId));
     },
+    // Удалённый участник сменил микрофон/камеру → обновляем его индикаторы/заглушку
+    // (US-7/US-12). До прихода события считаем устройства включёнными (PRD п. 13).
+    onMediaState: ({ from, audioEnabled: a, videoEnabled: v }) =>
+      setRemoteMediaState((prev) => ({ ...prev, [from]: { audioEnabled: a, videoEnabled: v } })),
     onChatMessage: (message) => setMessages((prev) => [...prev, message]),
     onSignalOffer: ({ from, sdp }) => pcmRef.current?.handleOffer(from, sdp),
     onSignalAnswer: ({ from, sdp }) => pcmRef.current?.handleAnswer(from, sdp),
@@ -191,6 +213,14 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
       signalingRef.current.joinRoom(roomId, name, initialRoomTitle);
     }
   }, [connected, ready, roomId, name, initialRoomTitle]);
+
+  // Транслируем своё состояние медиа остальным: первый раз — после входа (когда
+  // известен selfId), затем при каждом переключении микрофона/камеры. У остальных
+  // обновляются индикатор mute (US-7) и заглушка-силуэт (US-12). Поздние участники
+  // получают актуальные флаги из room:joined (сервер хранит их в реестре).
+  useEffect(() => {
+    if (selfId) signalingRef.current?.sendMediaState(audioEnabled, videoEnabled);
+  }, [selfId, audioEnabled, videoEnabled]);
 
   // Размонтирование (выход/закрытие вкладки) — закрываем mesh и выходим из комнаты.
   useEffect(
@@ -255,8 +285,9 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
   }
 
   // self-view — первой плиткой (PRD F-07); удалённые участники следом. Состояние
-  // микрофона/камеры удалённых не передаётся текущим socket-контрактом, поэтому
-  // считаем их активными; силуэт показываем, пока поток ещё не пришёл.
+  // микрофона/камеры удалённых приходит по media:state (US-7/US-12); до первого
+  // события считаем устройства включёнными (PRD п. 13). Силуэт показываем, когда
+  // камера выключена ИЛИ поток ещё не пришёл.
   const tiles = [
     {
       id: selfId ?? 'self',
@@ -266,17 +297,21 @@ function RoomCall({ roomId, name, initialRoomTitle = '' }) {
       audioEnabled,
       videoEnabled,
     },
-    ...remoteMembers.map((member) => ({
-      id: member.socketId,
-      name: member.name,
-      stream: remoteStreams[member.socketId] ?? null,
-      isSelf: false,
-      audioEnabled: true,
-      videoEnabled: Boolean(remoteStreams[member.socketId]),
-      // 'failed' → ICE-сбой пары (строгий NAT / STUN недоступен): показываем
-      // индикатор, но участника оставляем (задача 20, TDD §14 TBD-1).
-      connectionFailed: peerStates[member.socketId] === 'failed',
-    })),
+    ...remoteMembers.map((member) => {
+      const media = remoteMediaState[member.socketId];
+      const stream = remoteStreams[member.socketId] ?? null;
+      return {
+        id: member.socketId,
+        name: member.name,
+        stream,
+        isSelf: false,
+        audioEnabled: media?.audioEnabled ?? true,
+        videoEnabled: (media?.videoEnabled ?? true) && Boolean(stream),
+        // 'failed' → ICE-сбой пары (строгий NAT / STUN недоступен): показываем
+        // индикатор, но участника оставляем (задача 20, TDD §14 TBD-1).
+        connectionFailed: peerStates[member.socketId] === 'failed',
+      };
+    }),
   ];
 
   return (

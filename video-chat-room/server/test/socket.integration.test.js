@@ -239,6 +239,46 @@ describe('relay сигналинга (F-06, §7.1)', () => {
   });
 });
 
+describe('media:state (US-7/US-12)', () => {
+  test('состав по умолчанию приходит с включёнными микрофоном и камерой', async () => {
+    const roomId = uniqueRoom();
+    await joinRoom({ roomId, name: 'A' });
+    const b = await joinRoom({ roomId, name: 'B' });
+
+    assert.equal(b.joined.members[0].audioEnabled, true);
+    assert.equal(b.joined.members[0].videoEnabled, true);
+  });
+
+  test('изменение ретранслируется остальным в комнате с from', async () => {
+    const roomId = uniqueRoom();
+    const a = await joinRoom({ roomId, name: 'A' });
+    const b = await joinRoom({ roomId, name: 'B' });
+
+    const got = waitForEvent(b.socket, 'media:state');
+    a.socket.emit('media:state', { audioEnabled: false, videoEnabled: false });
+
+    const state = await got;
+    assert.equal(state.from, a.socket.id);
+    assert.equal(state.audioEnabled, false);
+    assert.equal(state.videoEnabled, false);
+  });
+
+  test('поздний участник получает актуальные флаги в room:joined', async () => {
+    const roomId = uniqueRoom();
+    const a = await joinRoom({ roomId, name: 'A' });
+
+    // A выключил камеру до входа B; короткая пауза — сервер успел записать состояние
+    // в реестр (своего media:state отправитель не получает, ждать нечего).
+    a.socket.emit('media:state', { audioEnabled: true, videoEnabled: false });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const b = await joinRoom({ roomId, name: 'B' });
+    const memberA = b.joined.members.find((m) => m.socketId === a.socket.id);
+    assert.equal(memberA.audioEnabled, true);
+    assert.equal(memberA.videoEnabled, false);
+  });
+});
+
 describe('выход и обрыв (F-18, US-10/US-11)', () => {
   test('disconnect → room:peer-left и системное сообщение остальным', async () => {
     const roomId = uniqueRoom();

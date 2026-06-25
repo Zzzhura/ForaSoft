@@ -10,8 +10,16 @@ import { RoomRegistry } from '../src/rooms.js';
  * Раннер — встроенный `node:test` (без внешних зависимостей).
  */
 
-/** Сокращение для участника. */
+/** Сокращение для участника (вход). */
 const member = (socketId, name = `user-${socketId}`) => ({ socketId, name });
+
+/** Ожидаемый снимок участника: камера/микрофон по умолчанию включены (PRD п. 13). */
+const snap = (socketId, name = `user-${socketId}`) => ({
+  socketId,
+  name,
+  audioEnabled: true,
+  videoEnabled: true,
+});
 
 /** Минимальное сообщение для истории. */
 const msg = (id, text = `m${id}`) => ({ id, type: 'user', name: 'A', text, ts: id });
@@ -32,7 +40,7 @@ describe('RoomRegistry.joinRoom', () => {
     assert.equal(result.ok, true);
     assert.equal(registry.hasRoom('r1'), true);
     assert.equal(registry.getMemberCount('r1'), 1);
-    assert.deepEqual(result.members, [{ socketId: 's1', name: 'user-s1' }]);
+    assert.deepEqual(result.members, [snap('s1')]);
   });
 
   test('название комнаты задаёт создатель; последующие входы его не меняют', () => {
@@ -97,7 +105,7 @@ describe('RoomRegistry.leaveRoom', () => {
     const result = registry.leaveRoom('r1', 's1');
 
     assert.equal(result.roomDeleted, false);
-    assert.deepEqual(result.members, [{ socketId: 's2', name: 'user-s2' }]);
+    assert.deepEqual(result.members, [snap('s2')]);
     assert.equal(registry.getMemberCount('r1'), 1);
   });
 
@@ -195,7 +203,7 @@ describe('RoomRegistry getters', () => {
 
     registry.joinRoom('r1', member('s1'));
     const members = registry.getMembers('r1');
-    assert.deepEqual(members, [{ socketId: 's1', name: 'user-s1' }]);
+    assert.deepEqual(members, [snap('s1')]);
     members.push({ socketId: 'x', name: 'x' });
     assert.equal(registry.getMemberCount('r1'), 1);
   });
@@ -213,5 +221,37 @@ describe('RoomRegistry getters', () => {
   test('getMemberCount несуществующей комнаты → 0', () => {
     const registry = new RoomRegistry();
     assert.equal(registry.getMemberCount('missing'), 0);
+  });
+});
+
+describe('RoomRegistry.setMediaState (US-7/US-12)', () => {
+  test('обновляет флаги микрофона/камеры в снимке состава', () => {
+    const registry = new RoomRegistry();
+    registry.joinRoom('r1', member('s1'));
+
+    const ok = registry.setMediaState('r1', 's1', { audioEnabled: false, videoEnabled: false });
+
+    assert.equal(ok, true);
+    assert.deepEqual(registry.getMembers('r1'), [
+      { socketId: 's1', name: 'user-s1', audioEnabled: false, videoEnabled: false },
+    ]);
+  });
+
+  test('приводит значения к boolean (тонкий relay)', () => {
+    const registry = new RoomRegistry();
+    registry.joinRoom('r1', member('s1'));
+
+    registry.setMediaState('r1', 's1', { audioEnabled: 0, videoEnabled: 'yes' });
+
+    const [m] = registry.getMembers('r1');
+    assert.equal(m.audioEnabled, false);
+    assert.equal(m.videoEnabled, true);
+  });
+
+  test('no-op для несуществующей комнаты/участника', () => {
+    const registry = new RoomRegistry();
+    assert.equal(registry.setMediaState('missing', 's1', {}), false);
+    registry.joinRoom('r1', member('s1'));
+    assert.equal(registry.setMediaState('r1', 'ghost', {}), false);
   });
 });

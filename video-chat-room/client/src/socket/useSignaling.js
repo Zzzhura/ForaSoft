@@ -25,10 +25,11 @@ import { io } from 'socket.io-client';
  * @typedef {'connecting'|'connected'|'error'} SignalingStatus
  *
  * @typedef {Object} SignalingHandlers
- * @property {(data: { selfId: string, members: Array<{socketId:string,name:string}>, history: Array, title: string }) => void} [onJoined]      `room:joined` — успешный вход (состав без себя + история + название комнаты, F-14).
+ * @property {(data: { selfId: string, members: Array<{socketId:string,name:string,audioEnabled:boolean,videoEnabled:boolean}>, history: Array, title: string }) => void} [onJoined]      `room:joined` — успешный вход (состав без себя + история + название комнаты, F-14).
  * @property {(data: { roomId: string }) => void} [onRoomFull]        `room:full` — лимит 4 исчерпан (US-5).
  * @property {(data: { socketId: string, name: string }) => void} [onPeerJoined]  `room:peer-joined` — новый участник (триггер mesh-offer, §7.1).
  * @property {(data: { socketId: string }) => void} [onPeerLeft]      `room:peer-left` — участник вышел/отключился (US-10/US-11).
+ * @property {(data: { from: string, audioEnabled: boolean, videoEnabled: boolean }) => void} [onMediaState]  `media:state` — участник сменил состояние микрофона/камеры (US-7/US-12).
  * @property {(message: { id:string, type:'user'|'system', name?:string, text:string, ts:number }) => void} [onChatMessage] `chat:message` — новое сообщение (user/system).
  * @property {(data: { from: string, sdp: object }) => void} [onSignalOffer]   `signal:offer` (relay).
  * @property {(data: { from: string, sdp: object }) => void} [onSignalAnswer]  `signal:answer` (relay).
@@ -44,6 +45,7 @@ import { io } from 'socket.io-client';
  *   leaveRoom: () => void,
  *   sendChat: (text: string) => void,
  *   sendSignal: (type: 'offer'|'answer'|'ice', to: string, payload: object) => void,
+ *   sendMediaState: (audioEnabled: boolean, videoEnabled: boolean) => void,
  * }}
  */
 export function useSignaling(handlers = {}) {
@@ -86,6 +88,7 @@ export function useSignaling(handlers = {}) {
     forward('room:full', 'onRoomFull');
     forward('room:peer-joined', 'onPeerJoined');
     forward('room:peer-left', 'onPeerLeft');
+    forward('media:state', 'onMediaState');
     forward('chat:message', 'onChatMessage');
     forward('signal:offer', 'onSignalOffer');
     forward('signal:answer', 'onSignalAnswer');
@@ -138,6 +141,17 @@ export function useSignaling(handlers = {}) {
     socketRef.current?.emit(`signal:${type}`, { to, ...payload });
   };
 
+  /**
+   * Транслирует своё состояние медиа остальным в комнате: `media:state
+   * {audioEnabled, videoEnabled}` (US-7/US-12). Шлётся после входа и при каждом
+   * переключении микрофона/камеры — у остальных обновляются индикаторы/заглушка.
+   * @param {boolean} audioEnabled
+   * @param {boolean} videoEnabled
+   */
+  const sendMediaState = (audioEnabled, videoEnabled) => {
+    socketRef.current?.emit('media:state', { audioEnabled, videoEnabled });
+  };
+
   return {
     status,
     connected: status === 'connected',
@@ -146,5 +160,6 @@ export function useSignaling(handlers = {}) {
     leaveRoom,
     sendChat,
     sendSignal,
+    sendMediaState,
   };
 }

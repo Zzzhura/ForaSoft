@@ -81,6 +81,21 @@ export function registerRoomHandlers(io, socket) {
     emitSystemMessage(io, roomId, `${name} присоединился к комнате`);
   });
 
+  // Состояние медиа участника (микрофон/камера) → индикаторы у остальных
+  // (US-7 mute-иконка, US-12 заглушка-силуэт). Сервер хранит его в реестре, чтобы
+  // поздний участник получил актуальные флаги в room:joined, и ретранслирует
+  // изменение остальным в комнате. Тонкий relay — содержимое не интерпретируется.
+  socket.on('media:state', (payload = {}) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) {
+      return; // сокет ещё не в комнате — игнорируем
+    }
+    const audioEnabled = Boolean(payload.audioEnabled);
+    const videoEnabled = Boolean(payload.videoEnabled);
+    roomRegistry.setMediaState(roomId, socket.id, { audioEnabled, videoEnabled });
+    socket.to(roomId).emit('media:state', { from: socket.id, audioEnabled, videoEnabled });
+  });
+
   // Явный выход и обрыв соединения обрабатываются одинаково (PRD F-18, US-10/US-11):
   // не различаем «вышел» и «потерял соединение».
   socket.on('room:leave', () => handleLeave(io, socket));
