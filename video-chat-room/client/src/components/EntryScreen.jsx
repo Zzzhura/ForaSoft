@@ -61,13 +61,7 @@ export default function EntryScreen({
         <div className="start__hero">
           {/* На форме подключения (с превью) логотип не показываем. */}
           {!withPreview && (
-            <img
-              className="start__logo"
-              src="/icon.svg"
-              alt="Fora Soft"
-              width="48"
-              height="48"
-            />
+            <img className="start__logo" src="/icon.svg" alt="Fora Soft" width="48" height="48" />
           )}
           <div className="start__heading">
             <h1 className="start__title">{title}</h1>
