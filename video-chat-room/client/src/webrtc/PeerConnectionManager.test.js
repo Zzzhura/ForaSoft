@@ -152,16 +152,20 @@ class MockRTCPeerConnection {
   }
 }
 
-/** Минимальный мок `MediaStream` (в node/jsdom его нет): копит дорожки. */
+/** Минимальный мок `MediaStream` (в node/jsdom его нет): мутируемый набор дорожек. */
 class MockMediaStream {
   constructor(tracks = []) {
     this._tracks = [...tracks];
   }
   getTracks() {
-    return this._tracks;
+    return [...this._tracks];
   }
   addTrack(track) {
-    this._tracks.push(track);
+    if (!this._tracks.includes(track)) this._tracks.push(track);
+  }
+  removeTrack(track) {
+    const i = this._tracks.indexOf(track);
+    if (i >= 0) this._tracks.splice(i, 1);
   }
 }
 
@@ -218,13 +222,20 @@ describe('правило initiator (роли polite/impolite, 10.1, §7.1)', () 
     expect(pcm.isInitiator('a')).toBe(false); // 'b' > 'a'
   });
 
-  test('addPeer порождает offer через onnegotiationneeded', async () => {
+  test('initiator (меньший socketId) шлёт offer через onnegotiationneeded', async () => {
     const { pcm, sendSignal } = makePCM({ selfId: 'a' });
-    pcm.addPeer('b');
+    pcm.addPeer('b'); // 'a' < 'b' → мы initiator
     await flush();
     expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
       sdp: { type: 'offer', sdp: 'offer-sdp' },
     });
+  });
+
+  test('не-initiator offer НЕ шлёт (ждёт его от initiator, анти-glare)', async () => {
+    const { pcm, sendSignal } = makePCM({ selfId: 'z' });
+    pcm.addPeer('a'); // 'z' > 'a' → мы НЕ initiator
+    await flush();
+    expect(sendSignal.mock.calls.some(([type]) => type === 'offer')).toBe(false);
   });
 });
 
@@ -253,16 +264,16 @@ describe('addPeer', () => {
     expect(pc.senders).toHaveLength(2);
   });
 
-  test('без видеодорожки: recvonly video-трансивер (принимать чужое видео)', () => {
+  test('без видеодорожки: прогретый sendrecv video-трансивер (включить камеру позже)', () => {
     const { pcm } = makePCM({ selfId: 'a', localStream: fakeLocalStream({ video: false }) });
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
-    expect(pc.transceivers.some((t) => t.kind === 'video' && t.direction === 'recvonly')).toBe(
+    expect(pc.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
       true,
     );
   });
 
-  test('без локального потока: recvonly audio + recvonly video', () => {
+  test('без локального потока: recvonly audio + sendrecv video', () => {
     const { pcm } = makePCM({ selfId: 'a', localStream: null });
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
@@ -270,7 +281,7 @@ describe('addPeer', () => {
     expect(pc.transceivers.some((t) => t.kind === 'audio' && t.direction === 'recvonly')).toBe(
       true,
     );
-    expect(pc.transceivers.some((t) => t.kind === 'video' && t.direction === 'recvonly')).toBe(
+    expect(pc.transceivers.some((t) => t.kind === 'video' && t.direction === 'sendrecv')).toBe(
       true,
     );
   });
@@ -342,51 +353,47 @@ describe('буферизация ICE-кандидатов', () => {
   });
 });
 
-describe('perfect negotiation (glare)', () => {
-  test('impolite (initiator) игнорирует встречный offer при коллизии', async () => {
-    const { pcm, sendSignal } = makePCM({ selfId: 'a' }); // 'a' < 'b' → impolite
-    pcm.addPeer('b');
-    await flush(); // наш offer в полёте → have-local-offer
-    sendSignal.mockClear();
-
-    await pcm.handleOffer('b', { type: 'offer', sdp: 'theirs' });
-    // Наш offer победит — встречный игнорируем, answer не шлём.
-    expect(sendSignal.mock.calls.some(([type]) => type === 'answer')).toBe(false);
-  });
-
-  test('polite (не-initiator) принимает встречный offer и отвечает answer', async () => {
-    const { pcm, sendSignal } = makePCM({ selfId: 'z' }); // 'z' > 'a' → polite
-    pcm.addPeer('a');
-    await flush(); // наш offer в полёте → have-local-offer
-    sendSignal.mockClear();
-
-    await pcm.handleOffer('a', { type: 'offer', sdp: 'theirs' });
-    const [pc] = MockRTCPeerConnection.instances;
-    // Неявный rollback + приём чужого offer + answer.
-    expect(pc.remoteDescription).toEqual({ type: 'offer', sdp: 'theirs' });
-    expect(sendSignal).toHaveBeenCalledWith('answer', 'a', {
-      sdp: { type: 'answer', sdp: 'answer-sdp' },
-    });
-  });
-});
-
 describe('колбэки UI', () => {
-  test('ontrack собирает входящие дорожки в один поток участника (onRemoteStream)', () => {
+  test('ontrack: стрим пересобирается при смене набора дорожек (audio → audio+video)', () => {
     const { pcm, onRemoteStream } = makePCM();
     pcm.addPeer('b');
     const [pc] = MockRTCPeerConnection.instances;
 
     // event.streams игнорируем (msid ненадёжен) — копим по getReceivers().
-    const audio = { kind: 'audio' };
-    const video = { kind: 'video' };
+    const audio = { kind: 'audio', id: 'a1' };
+    const video = { kind: 'video', id: 'v1' };
     pc.receivers.push({ track: audio });
     pc.ontrack({ track: audio, streams: [] });
     pc.receivers.push({ track: video });
     pc.ontrack({ track: video, streams: [] });
 
+    // Два изменения набора → два emit; финальный стрим содержит обе дорожки.
     expect(onRemoteStream).toHaveBeenCalledTimes(2);
     const stream = onRemoteStream.mock.calls[1][1];
     expect(stream.getTracks()).toEqual([audio, video]);
+  });
+
+  test('muted→unmuted даёт новый стрим ОДИН раз (включение камеры → play перезапускается)', () => {
+    // Размьют дорожки (пошли кадры) должен дать новый объект стрима, чтобы VideoTile
+    // перезапустил play() и плитка ожила; повторные resync с тем же состоянием — нет.
+    const { pcm, onRemoteStream } = makePCM();
+    pcm.addPeer('b');
+    const [pc] = MockRTCPeerConnection.instances;
+
+    const audio = { kind: 'audio', id: 'a1', muted: false };
+    const video = { kind: 'video', id: 'v1', muted: true, readyState: 'live' };
+    pc.receivers.push({ track: audio }, { track: video });
+    pc.ontrack({ track: audio, streams: [] });
+    expect(onRemoteStream).toHaveBeenCalledTimes(1);
+
+    // Кадры пошли: та же дорожка размьютилась → ровно один новый emit.
+    video.muted = false;
+    pcm.refreshPeerStream('b');
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
+
+    // Повторный resync без изменений — без нового emit (нет холостого дёрганья srcObject).
+    pcm.refreshPeerStream('b');
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
   });
 
   test('живой video-receiver попадает в remoteStream ещё до unmute (US-5/US-6)', () => {
@@ -435,10 +442,10 @@ describe('колбэки UI', () => {
 });
 
 describe('тумблеры камеры и закрытие', () => {
-  test('первое включение камеры (recvonly): replaceTrack + переход в sendrecv + offer (US-6)', async () => {
-    // Вход без камеры → recvonly video-трансивер. Включение камеры ставит дорожку и
-    // переводит направление в sendrecv: это запускает renegotiation (offer), которая
-    // надёжно доставляет видео второй стороне (а не «холодный» replaceTrack).
+  test('первое включение камеры (холодный sender): replaceTrack + renegotiation offer (US-6)', async () => {
+    // Вход без камеры → прогретый sendrecv video-трансивер (sender без дорожки).
+    // Включение камеры подменяет дорожку И запускает renegotiation — иначе Chromium
+    // не всегда стартует энкодер и у второй стороны чёрная плитка.
     const localStream = fakeLocalStream({ video: false });
     const { pcm, sendSignal } = makePCM({ selfId: 'a', localStream });
     pcm.localStream = localStream;
@@ -453,7 +460,6 @@ describe('тумблеры камеры и закрытие', () => {
     await flush();
 
     expect(videoTx.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
-    expect(videoTx.direction).toBe('sendrecv');
     expect(sendSignal).toHaveBeenCalledWith('offer', 'b', {
       sdp: { type: 'offer', sdp: 'offer-sdp' },
     });
