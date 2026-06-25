@@ -50,6 +50,7 @@ export default function VideoTile({
   // Self-view заглушён (`muted`), его автозапуск не блокируется. Повтор play()
   // по смене `playToken` происходит уже внутри пользовательского жеста.
   const videoTrackId = stream?.getVideoTracks()[0]?.id ?? null;
+  const videoTrackMuted = stream?.getVideoTracks()[0]?.muted ?? null;
 
   useEffect(() => {
     const el = videoRef.current;
@@ -81,7 +82,7 @@ export default function VideoTile({
         track.onunmute = null;
       }
     };
-  }, [stream, videoTrackId, isSelf, onPlayBlocked, playToken]);
+  }, [stream, videoTrackId, videoTrackMuted, isSelf, onPlayBlocked, playToken]);
 
   // Маршрутизация звука на выбранное устройство вывода (динамики). setSinkId есть
   // не во всех браузерах — при отсутствии просто пропускаем. Self-view заглушён,

@@ -13,12 +13,12 @@ import { RoomRegistry } from '../src/rooms.js';
 /** Сокращение для участника (вход). */
 const member = (socketId, name = `user-${socketId}`) => ({ socketId, name });
 
-/** Ожидаемый снимок участника: камера/микрофон по умолчанию включены (PRD п. 13). */
+/** Ожидаемый снимок участника до media:state (камера/микрофон off, как у клиента). */
 const snap = (socketId, name = `user-${socketId}`) => ({
   socketId,
   name,
-  audioEnabled: true,
-  videoEnabled: true,
+  audioEnabled: false,
+  videoEnabled: false,
 });
 
 /** Минимальное сообщение для истории. */

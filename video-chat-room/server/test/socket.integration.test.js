@@ -240,13 +240,13 @@ describe('relay сигналинга (F-06, §7.1)', () => {
 });
 
 describe('media:state (US-7/US-12)', () => {
-  test('состав по умолчанию приходит с включёнными микрофоном и камерой', async () => {
+  test('состав по умолчанию — камера и микрофон выключены до media:state', async () => {
     const roomId = uniqueRoom();
     await joinRoom({ roomId, name: 'A' });
     const b = await joinRoom({ roomId, name: 'B' });
 
-    assert.equal(b.joined.members[0].audioEnabled, true);
-    assert.equal(b.joined.members[0].videoEnabled, true);
+    assert.equal(b.joined.members[0].audioEnabled, false);
+    assert.equal(b.joined.members[0].videoEnabled, false);
   });
 
   test('изменение ретранслируется остальным в комнате с from', async () => {

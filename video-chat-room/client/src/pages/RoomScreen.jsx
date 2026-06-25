@@ -48,6 +48,8 @@ export default function RoomScreen() {
   const signalingRef = useRef(null);
   const localStreamRef = useRef(null);
   const mediaToastRef = useRef(false);
+  /** @type {React.MutableRefObject<Array<{ from: string, sdp: object }>>} */
+  const pendingOffersRef = useRef([]);
 
   const [selfId, setSelfId] = useState(null);
   /** @type {[Array<{socketId:string,name:string}>, Function]} */
@@ -129,7 +131,7 @@ export default function RoomScreen() {
         Object.fromEntries(
           members.map((m) => [
             m.socketId,
-            { audioEnabled: m.audioEnabled ?? true, videoEnabled: m.videoEnabled ?? true },
+            { audioEnabled: m.audioEnabled ?? false, videoEnabled: m.videoEnabled ?? false },
           ]),
         ),
       );
@@ -168,21 +170,32 @@ export default function RoomScreen() {
           setPeerStates((prev) => (prev[sid] === state ? prev : { ...prev, [sid]: state })),
       });
       pcmRef.current = pcm;
-      // Для каждого уже присутствующего участника поднимаем соединение; роль
-      // initiator определяется детерминированно внутри PCM (анти-glare, §7.1).
-      members.forEach((member) => pcm.addPeer(member.socketId));
+      const pendingByFrom = new Map(pendingOffersRef.current.map((o) => [o.from, o.sdp]));
+      pendingOffersRef.current = [];
+      members.forEach((member) => {
+        const buffered = pendingByFrom.get(member.socketId);
+        if (buffered) {
+          pcm.handleOffer(member.socketId, buffered);
+          pendingByFrom.delete(member.socketId);
+        } else {
+          pcm.addPeer(member.socketId);
+        }
+      });
+      for (const [from, sdp] of pendingByFrom) {
+        pcm.handleOffer(from, sdp);
+      }
     },
     onRoomFull: () => setRoomFull(true),
     onPeerJoined: ({ socketId, name: peerName }) => {
       setRemoteMembers((prev) =>
         prev.some((m) => m.socketId === socketId) ? prev : [...prev, { socketId, name: peerName }],
       );
-      // До media:state считаем камеру включённой (PRD п. 13); силуэт — только
-      // по флагу media:state, а не по наличию video-трека в потоке (US-12).
+      // До media:state — выключено (как у клиента по умолчанию, PRD п. 13 отклонён).
       setRemoteMediaState((prev) =>
-        prev[socketId] ? prev : { ...prev, [socketId]: { audioEnabled: true, videoEnabled: true } },
+        prev[socketId] ? prev : { ...prev, [socketId]: { audioEnabled: false, videoEnabled: false } },
       );
       pcmRef.current?.addPeer(socketId);
+      pcmRef.current?.refreshPeerStream(socketId);
     },
     onPeerLeft: ({ socketId }) => {
       // removePeer → onPeerLeft колбэк уберёт поток; снимаем участника из состава.
@@ -191,10 +204,18 @@ export default function RoomScreen() {
     },
     // Удалённый участник сменил микрофон/камеру → обновляем его индикаторы/заглушку
     // (US-7/US-12). До прихода события считаем устройства включёнными (PRD п. 13).
-    onMediaState: ({ from, audioEnabled: a, videoEnabled: v }) =>
-      setRemoteMediaState((prev) => ({ ...prev, [from]: { audioEnabled: a, videoEnabled: v } })),
+    onMediaState: ({ from, audioEnabled: a, videoEnabled: v }) => {
+      setRemoteMediaState((prev) => ({ ...prev, [from]: { audioEnabled: a, videoEnabled: v } }));
+      if (v) pcmRef.current?.refreshPeerStream(from);
+    },
     onChatMessage: (message) => setMessages((prev) => [...prev, message]),
-    onSignalOffer: ({ from, sdp }) => pcmRef.current?.handleOffer(from, sdp),
+    onSignalOffer: ({ from, sdp }) => {
+      if (pcmRef.current) {
+        pcmRef.current.handleOffer(from, sdp);
+        return;
+      }
+      pendingOffersRef.current.push({ from, sdp });
+    },
     onSignalAnswer: ({ from, sdp }) => pcmRef.current?.handleAnswer(from, sdp),
     onSignalIce: ({ from, candidate }) => pcmRef.current?.handleIce(from, candidate),
     onServerError: ({ code, message }) => console.error(`[room] server:error ${code}: ${message}`),

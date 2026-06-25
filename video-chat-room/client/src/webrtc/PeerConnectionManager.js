@@ -66,7 +66,7 @@ export class PeerConnectionManager {
 
   /** @type {WeakSet<MediaStreamTrack>} дорожки с подписанным onunmute. */
   #unmuteHooked = new WeakSet();
-  /** @type {Map<string, number>} отложенный resync remoteStream по socketId. */
+  /** @type {Map<string, ReturnType<typeof setTimeout>[]>} resync-таймеры по socketId. */
   #resyncTimers = new Map();
 
   /**
@@ -126,9 +126,13 @@ export class PeerConnectionManager {
     // не делаем (TBD-3, PRD F-18: возврат только вручную).
     pc.onconnectionstatechange = () => {
       this.onPeerState?.(socketId, pc.connectionState);
-      // После ICE/DTLS дорожки приёмника могут появиться без повторного ontrack
-      // (sendrecv-трансивер с пустым sender при выключенной камере на старте).
       if (pc.connectionState === 'connected') {
+        this.#scheduleStreamResync(socketId);
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         this.#scheduleStreamResync(socketId);
       }
     };
@@ -217,6 +221,12 @@ export class PeerConnectionManager {
     const record = this.peers.get(socketId);
     if (!record) return;
 
+    const timers = this.#resyncTimers.get(socketId);
+    if (timers) {
+      for (const id of timers) clearTimeout(id);
+      this.#resyncTimers.delete(socketId);
+    }
+
     this.#teardown(record.pc);
     this.peers.delete(socketId);
     this.onPeerLeft?.(socketId);
@@ -231,9 +241,9 @@ export class PeerConnectionManager {
   replaceVideoTrack(track) {
     for (const [socketId, record] of this.peers) {
       if (track) {
-        this.#enableOutboundVideo(socketId, record, track).catch((err) =>
-          console.error('[pcm] replaceVideoTrack failed:', err),
-        );
+        this.#enableOutboundVideo(socketId, record, track)
+          .then(() => this.#scheduleStreamResync(socketId))
+          .catch((err) => console.error('[pcm] replaceVideoTrack failed:', err));
         continue;
       }
       this.#findOutboundVideoSender(record)
@@ -297,8 +307,20 @@ export class PeerConnectionManager {
     }
   }
 
+  /**
+   * Пересобирает remoteStream участника (после media:state / позднего появления кадров).
+   * @param {string} socketId
+   */
+  refreshPeerStream(socketId) {
+    this.#scheduleStreamResync(socketId);
+  }
+
   /** Закрывает все соединения (выход из комнаты, размонтирование — задача 17/18). */
   closeAll() {
+    for (const timers of this.#resyncTimers.values()) {
+      for (const id of timers) clearTimeout(id);
+    }
+    this.#resyncTimers.clear();
     for (const { pc } of this.peers.values()) {
       this.#teardown(pc);
     }
@@ -337,14 +359,17 @@ export class PeerConnectionManager {
    * @returns {RTCRtpSender | null}
    */
   #findOutboundVideoSender(record) {
-    const tx = record.pc.getTransceivers().find((t) => t.kind === 'video');
-    if (tx) {
-      return tx.sender;
-    }
-    if (record.videoSender) {
-      return record.videoSender;
-    }
-    return null;
+    const videoTxs = record.pc.getTransceivers().filter((t) => {
+      if (t.kind !== 'video') return false;
+      const dir = t.direction ?? t.currentDirection ?? '';
+      return dir !== 'stopped' && dir !== 'inactive';
+    });
+    const withTrack = videoTxs.find((t) => t.sender.track);
+    if (withTrack) return withTrack.sender;
+    const sendCapable = videoTxs.find((t) => String(t.direction ?? '').includes('send'));
+    if (sendCapable) return sendCapable.sender;
+    if (videoTxs.length > 0) return videoTxs[videoTxs.length - 1].sender;
+    return record.videoSender;
   }
 
   /**
@@ -363,16 +388,30 @@ export class PeerConnectionManager {
 
   /**
    * Выбирает по одной актуальной входящей дорожке каждого kind из приёмников.
-   * После renegotiation при позднем включении камеры может быть два video-receiver:
-   * старый muted и новый с кадрами — оставляем unmuted.
+   *
+   * Видео берём ВСЕГДА, как только есть живой receiver-track — даже пока он
+   * `muted` (кадры ещё не пошли). Иначе плитка нового участника остаётся чёрной:
+   * пока дорожки нет в `MediaStream`, появление видео целиком зависит от окна
+   * resync-таймеров (≤3000 мс) и события `onunmute`, а на медленном пути (строгий
+   * NAT/без TURN, mesh 3–4) размьют приходит позже и плитка не оживает (US-5/US-6).
+   * Держа дорожку в потоке заранее, `<video>` сам отрисует кадры в момент unmute,
+   * без пересборки стрима. Из нескольких video-receiver предпочитаем размьюченный
+   * (актуальные кадры после renegotiation), иначе — последний живой.
    * @param {RTCPeerConnection} pc
    * @returns {MediaStreamTrack[]}
    */
   #pickReceiverTracks(pc) {
     /** @type {Map<string, MediaStreamTrack>} */
     const byKind = new Map();
+    /** @type {MediaStreamTrack[]} */
+    const videoCandidates = [];
+
     for (const { track } of pc.getReceivers()) {
       if (!track || track.readyState === 'ended') {
+        continue;
+      }
+      if (track.kind === 'video') {
+        videoCandidates.push(track);
         continue;
       }
       const prev = byKind.get(track.kind);
@@ -380,6 +419,12 @@ export class PeerConnectionManager {
         byKind.set(track.kind, track);
       }
     }
+
+    if (videoCandidates.length > 0) {
+      const unmutedVideo = videoCandidates.find((t) => !t.muted);
+      byKind.set('video', unmutedVideo ?? videoCandidates[videoCandidates.length - 1]);
+    }
+
     return [...byKind.values()];
   }
 
@@ -408,9 +453,18 @@ export class PeerConnectionManager {
       .sort()
       .join(',');
 
+    const prevVideoTrack = record.remoteStream?.getVideoTracks?.()?.[0] ?? null;
+
     record.remoteStream = new MediaStream(tracks);
 
-    if (prevIds !== nextIds) {
+    const nextVideoTrack = tracks.find((t) => t.kind === 'video');
+    const videoUpgraded =
+      nextVideoTrack &&
+      (!prevVideoTrack ||
+        prevVideoTrack.id !== nextVideoTrack.id ||
+        (prevVideoTrack.muted && !nextVideoTrack.muted));
+
+    if (prevIds !== nextIds || videoUpgraded) {
       this.onRemoteStream?.(socketId, record.remoteStream);
     }
   }
@@ -423,19 +477,15 @@ export class PeerConnectionManager {
   #scheduleStreamResync(socketId) {
     const prev = this.#resyncTimers.get(socketId);
     if (prev) {
-      clearTimeout(prev);
+      for (const id of prev) clearTimeout(id);
     }
     const run = () => this.#syncRemoteStreamTracks(socketId);
     run();
     queueMicrotask(run);
-    this.#resyncTimers.set(
-      socketId,
-      setTimeout(() => {
-        this.#resyncTimers.delete(socketId);
-        run();
-      }, 100),
-    );
+    const timers = [100, 300, 750, 1500, 3000].map((ms) => setTimeout(run, ms));
+    this.#resyncTimers.set(socketId, timers);
   }
+
   /**
    * Подписывает onunmute на все входящие дорожки приёмников (не только уже
    * попавшие в remoteStream). После renegotiation unmuted-трек может появиться
@@ -498,6 +548,7 @@ export class PeerConnectionManager {
     pc.onicecandidate = null;
     pc.ontrack = null;
     pc.onconnectionstatechange = null;
+    pc.oniceconnectionstatechange = null;
     pc.close();
   }
 }

@@ -70,13 +70,14 @@ export class RoomRegistry {
     if (room.members.size >= this.maxMembers) {
       return { ok: false, reason: 'full' };
     }
-    // Камера и микрофон по умолчанию включены (PRD п. 13); клиент уточнит реальное
-    // состояние сразу после входа событием media:state (например, вход без устройств).
+    // Клиент по умолчанию выключает камеру/микрофон (отклонение PRD п. 13); реальное
+    // состояние приходит в media:state сразу после входа. false здесь — без чёрных
+    // плиток до первого media:state (US-12).
     room.members.set(member.socketId, {
       socketId: member.socketId,
       name: member.name,
-      audioEnabled: true,
-      videoEnabled: true,
+      audioEnabled: false,
+      videoEnabled: false,
     });
     // --- Конец критической секции. ---
 

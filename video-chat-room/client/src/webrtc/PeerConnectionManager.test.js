@@ -332,6 +332,40 @@ describe('колбэки UI', () => {
     expect(stream.getTracks()).toEqual([audio, video]);
   });
 
+  test('живой video-receiver попадает в remoteStream ещё до unmute (US-5/US-6)', () => {
+    // Дорожка нового участника muted, пока не пошли кадры — но она уже должна быть
+    // в потоке, чтобы `<video>` отрисовал кадры в момент unmute, а не остался чёрным.
+    const { pcm, onRemoteStream } = makePCM();
+    pcm.addPeer('b');
+    const [pc] = MockRTCPeerConnection.instances;
+
+    const audio = { kind: 'audio' };
+    const mutedVideo = { kind: 'video', muted: true, readyState: 'live' };
+    pc.receivers.push({ track: audio }, { track: mutedVideo });
+    pc.ontrack({ track: audio, streams: [] });
+
+    const stream = onRemoteStream.mock.calls.at(-1)[1];
+    const tracks = typeof stream.getTracks === 'function' ? stream.getTracks() : [];
+    expect(tracks.filter((t) => t.kind === 'video')).toHaveLength(1);
+    expect(tracks.filter((t) => t.kind === 'audio')).toHaveLength(1);
+  });
+
+  test('из нескольких video-receiver предпочитается размьюченный', () => {
+    const { pcm, onRemoteStream } = makePCM();
+    pcm.addPeer('b');
+    const [pc] = MockRTCPeerConnection.instances;
+
+    const audio = { kind: 'audio' };
+    const mutedVideo = { kind: 'video', muted: true, readyState: 'live' };
+    const liveVideo = { kind: 'video', muted: false, readyState: 'live' };
+    pc.receivers.push({ track: audio }, { track: mutedVideo }, { track: liveVideo });
+    pc.ontrack({ track: audio, streams: [] });
+
+    const stream = onRemoteStream.mock.calls.at(-1)[1];
+    const video = stream.getTracks().filter((t) => t.kind === 'video');
+    expect(video).toEqual([liveVideo]);
+  });
+
   test('onconnectionstatechange сообщает failed (деградация, задача 20)', () => {
     const { pcm, onPeerState } = makePCM();
     pcm.addPeer('b');
